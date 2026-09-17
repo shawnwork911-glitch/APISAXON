@@ -43,6 +43,9 @@ const MsGraph = (() => {
   async function init() {
     loadConfig();
     if (!config?.clientId || !config?.tenantId) return false;
+    if (typeof msal === "undefined") {
+      throw new Error("The MSAL library didn't load (script tag in index.html) — check your internet connection, ad blocker, or browser console for a blocked request, then reload.");
+    }
     msalInstance = new msal.PublicClientApplication({
       auth: {
         clientId: config.clientId,

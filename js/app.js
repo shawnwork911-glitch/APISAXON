@@ -29,7 +29,10 @@ const App = (() => {
       updateAuthUi(signedIn);
       if (signedIn) await refreshConnections();
     } catch (e) {
-      console.warn("MSAL init skipped:", e.message);
+      console.error("MSAL init failed:", e.message);
+      qs("connectionBanner").style.display = "flex";
+      qs("connectionBanner").textContent = `Microsoft sign-in isn't available: ${e.message}`;
+      qs("connectionBanner").classList.add("banner-error");
     }
     renderBrandGrid();
     showView("dashboard");
@@ -90,10 +93,15 @@ const App = (() => {
       folderPath: qs("cfgFolderPath").value.trim(),
     });
     ProxyClient.setProxyBaseUrl(qs("cfgProxyUrl").value.trim());
-    const ok = await MsGraph.init();
-    updateAuthUi(ok && MsGraph.isSignedIn());
-    qs("settingsSavedNote").textContent = "Saved. Click \"Sign in with Microsoft\" in the top bar to connect to SharePoint.";
-    setTimeout(() => (qs("settingsSavedNote").textContent = ""), 4000);
+    try {
+      const ok = await MsGraph.init();
+      updateAuthUi(ok && MsGraph.isSignedIn());
+      qs("settingsSavedNote").textContent = "Saved. Click \"Sign in with Microsoft\" in the top bar to connect to SharePoint.";
+    } catch (e) {
+      qs("settingsSavedNote").textContent = `Saved, but: ${e.message}`;
+      qs("settingsSavedNote").style.color = "var(--err)";
+    }
+    setTimeout(() => (qs("settingsSavedNote").textContent = ""), 6000);
   }
 
   async function refreshConnections() {
