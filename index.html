@@ -103,6 +103,7 @@ body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;backgroun
 @media (max-width:820px){.settings-grid, .extraction-grid, .brand-grid{grid-template-columns:1fr;}}
 
 .banner{display:flex;gap:10px;align-items:center;background:#241c14;border:1px solid #3a2c16;border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:.85rem;color:#e5c98a;}
+.banner.banner-error{background:#2a1414;border-color:#4a1e1e;color:#f0a5a5;}
 </style>
 </head>
 <body>
@@ -259,7 +260,7 @@ body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;backgroun
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/msal/3.7.1/msal-browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.7.1/lib/msal-browser.min.js"></script>
 <script src="js/brands.js"></script>
 <script src="js/signing.js"></script>
 <script src="js/proxy-client.js"></script>
