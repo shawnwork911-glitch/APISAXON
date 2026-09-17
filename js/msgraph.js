@@ -54,6 +54,7 @@ const MsGraph = (() => {
       },
       cache: { cacheLocation: "localStorage" },
     });
+    await msalInstance.initialize(); // required in MSAL.js v3+ before any other call
     await msalInstance.handleRedirectPromise();
     const accounts = msalInstance.getAllAccounts();
     if (accounts.length) account = accounts[0];
