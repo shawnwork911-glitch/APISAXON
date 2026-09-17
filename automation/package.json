@@ -1,0 +1,14 @@
+{
+  "name": "solarlink-daily-extract",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Scheduled GitHub Action script: pulls new hourly readings for every SharePoint-registered connection and writes them into SolarExtractionData.xlsx.",
+  "scripts": {
+    "extract": "node scripts/daily-extract.mjs"
+  },
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  },
+  "engines": { "node": ">=18" }
+}

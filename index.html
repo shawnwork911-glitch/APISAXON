@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SolarLink Connect — Multi-Brand Inverter API Extraction</title>
+<style>
+:root{
+  --bg:#0d1117; --panel:#141a24; --panel2:#1a212c; --line:#242c38;
+  --ink:#e7ecf3; --muted:#8a96a6;
+  --accent:#e5972a; --accent-ink:#1a1206;
+  --ok:#2fae66; --warn:#d99a2b; --err:#d94b4b;
+  --se:#2f6fd6; --fs:#e0812a; --sg:#3ac0d6; --sl:#7c5cd6; --gw:#3fae5a; --sma:#d33b3b;
+}
+*{box-sizing:border-box;}
+body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink);}
+.layout{display:flex;min-height:100vh;}
+
+/* Sidebar */
+.sidebar{width:230px;flex-shrink:0;background:linear-gradient(180deg,#151b26,#10141d);border-right:1px solid var(--line);padding:22px 14px;position:sticky;top:0;height:100vh;overflow-y:auto;}
+.brandmark{display:flex;align-items:center;gap:10px;margin-bottom:24px;padding:0 6px;}
+.brandmark .sq{width:30px;height:30px;border-radius:8px;background:var(--accent);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-weight:800;}
+.brandmark h1{font-size:.98rem;margin:0;}
+.brandmark .sub{font-size:.68rem;color:var(--muted);letter-spacing:.04em;}
+.nav-group-label{font-size:.68rem;color:var(--muted);letter-spacing:.08em;margin:16px 8px 8px;}
+.nav-btn{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:transparent;border:1px solid transparent;color:var(--ink);padding:9px 10px;border-radius:8px;font-size:.86rem;cursor:pointer;margin-bottom:3px;}
+.nav-btn:hover{background:rgba(255,255,255,.05);}
+.nav-btn.active{background:rgba(229,151,42,.14);color:var(--accent);border-color:rgba(229,151,42,.25);}
+
+/* Main */
+.main{flex:1;padding:26px 34px 60px;max-width:1180px;}
+.topbar{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;}
+.topbar h2{margin:0 0 4px;font-size:1.5rem;}
+.topbar .user{text-align:right;font-size:.82rem;color:var(--muted);}
+.auth-actions{display:flex;gap:8px;align-items:center;margin-top:4px;}
+
+.view{display:none;}
+.view.active{display:block;animation:fade .18s ease;}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+
+.callout{background:#182231;border-left:3px solid var(--accent);border-radius:8px;padding:12px 14px;font-size:.85rem;margin:14px 0;color:#c9d3e0;}
+.callout.warn{background:#241c14;border-left-color:var(--warn);}
+.callout strong{display:block;font-size:.72rem;letter-spacing:.03em;color:var(--warn);margin-bottom:4px;}
+.callout:not(.warn) strong{color:var(--accent);}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:16px;}
+.card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
+.card-head h3{margin:0;font-size:1.02rem;}
+
+.btn{border:1px solid var(--line);background:var(--panel2);color:var(--ink);padding:8px 14px;border-radius:8px;font-size:.84rem;cursor:pointer;}
+.btn:hover{background:#212a37;}
+.btn-primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:700;}
+.btn-primary:hover{filter:brightness(1.05);}
+.btn-ghost{background:transparent;}
+.btn:disabled{opacity:.5;cursor:not-allowed;}
+
+.empty-state{color:var(--muted);font-size:.88rem;padding:30px 10px;text-align:center;}
+
+/* Dashboard company rows */
+.company-row{display:flex;align-items:center;gap:14px;padding:12px 6px;border-bottom:1px solid var(--line);}
+.company-row:last-child{border-bottom:none;}
+.badge{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.72rem;color:#fff;flex-shrink:0;}
+.company-main{flex:1;}
+.company-name{font-weight:600;}
+.company-sub{font-size:.78rem;color:var(--muted);}
+.pill{font-size:.7rem;padding:3px 9px;border-radius:99px;font-weight:700;}
+.pill.ok{background:rgba(47,174,102,.16);color:var(--ok);}
+.pill.warn{background:rgba(217,154,43,.16);color:var(--warn);}
+.company-actions{display:flex;gap:6px;}
+
+/* Add Company modal */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto;z-index:50;}
+.modal-overlay.active{display:flex;}
+.modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;width:100%;max-width:620px;padding:22px 24px;}
+.modal-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;}
+.modal-top h3{margin:0;}
+.modal-close{background:transparent;border:none;color:var(--muted);font-size:1.2rem;cursor:pointer;}
+.modal-sub{color:var(--muted);font-size:.85rem;margin-bottom:16px;}
+.brand-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;}
+.brand-card{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px 8px;display:flex;flex-direction:column;align-items:center;gap:8px;color:var(--ink);cursor:pointer;font-size:.82rem;}
+.brand-card:hover{border-color:var(--accent);}
+.brand-card.selected{border-color:var(--accent);background:rgba(229,151,42,.08);}
+.brand-badge{width:38px;height:38px;border-radius:9px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:.74rem;}
+.field{margin-bottom:12px;}
+.field label{display:block;font-size:.74rem;color:var(--muted);letter-spacing:.03em;margin-bottom:5px;}
+.field input, .field select, .date-input{width:100%;background:#0f141c;border:1px solid var(--line);color:var(--ink);padding:9px 10px;border-radius:8px;font-size:.88rem;}
+.field-help{font-size:.72rem;color:var(--muted);margin-top:4px;}
+.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
+
+/* Extraction view */
+.extraction-grid{display:grid;grid-template-columns:1.4fr 1fr .8fr .8fr;gap:14px;align-items:start;}
+.extraction-grid .field{margin-bottom:0;}
+.station-box{max-height:150px;overflow-y:auto;background:#0f141c;border:1px solid var(--line);border-radius:8px;padding:8px 10px;}
+.station-row{display:flex;align-items:center;gap:8px;font-size:.85rem;padding:3px 0;}
+.job-row{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px;background:var(--panel2);}
+.job-title{font-size:.86rem;margin-bottom:8px;}
+.job-bar{height:6px;background:#0f141c;border-radius:99px;overflow:hidden;margin-bottom:8px;}
+.job-bar-fill{height:100%;width:0;background:var(--accent);transition:width .2s ease;}
+.job-status{font-size:.78rem;color:var(--muted);}
+
+/* Settings */
+.settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+@media (max-width:820px){.settings-grid, .extraction-grid, .brand-grid{grid-template-columns:1fr;}}
+
+.banner{display:flex;gap:10px;align-items:center;background:#241c14;border:1px solid #3a2c16;border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:.85rem;color:#e5c98a;}
+</style>
+</head>
+<body>
+<div class="layout">
+  <div class="sidebar">
+    <div class="brandmark">
+      <div class="sq">☀</div>
+      <div>
+        <h1>SolarLink Connect</h1>
+        <div class="sub">MULTI-BRAND API EXTRACTION</div>
+      </div>
+    </div>
+    <div class="nav-group-label">MONITOR</div>
+    <button class="nav-btn active" data-view="dashboard">▦ Dashboard</button>
+    <button class="nav-btn" data-view="extraction">↗ Extraction</button>
+    <div class="nav-group-label">SYSTEM</div>
+    <button class="nav-btn" data-view="settings">⚙ Settings</button>
+  </div>
+
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <h2 id="pageTitle">Overview Dashboard</h2>
+      </div>
+      <div class="user">
+        <div id="userLabel">Not signed in</div>
+        <div class="auth-actions">
+          <button class="btn btn-primary" id="btnSignIn">Sign in with Microsoft</button>
+          <button class="btn" id="btnSignOut" style="display:none">Sign out</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="connectionBanner" class="banner" style="display:flex">
+      Sign in with Microsoft (under Settings, after entering your Azure AD app details) to load and save company connections from SharePoint.
+    </div>
+
+    <!-- DASHBOARD -->
+    <div class="view active" id="view-dashboard">
+      <div class="card">
+        <div class="card-head">
+          <h3>Connected Inverter Brands</h3>
+          <button class="btn btn-primary" id="btnAddCompany">+ Add Company</button>
+        </div>
+        <div id="companyList"></div>
+      </div>
+    </div>
+
+    <!-- EXTRACTION -->
+    <div class="view" id="view-extraction">
+      <div class="card">
+        <div class="card-head"><h3>Manual / scheduled extraction</h3></div>
+        <div class="callout">
+          <strong>How this works</strong>
+          Pick a company, its stations, a data resolution and a date range, then queue the extraction. Calls are paced to each brand's daily quota and resumable — if a run stops partway (quota reached, tab closed), the next run continues from where it left off. Results are appended to <code>SolarExtractionData.xlsx</code> in your SharePoint site, and can also be downloaded as a standalone Excel file per run.
+        </div>
+        <div class="extraction-grid">
+          <div class="field">
+            <label>Company</label>
+            <select id="extCompany"><option value="">Select a company…</option></select>
+          </div>
+          <div class="field">
+            <label>Stations</label>
+            <div class="station-box" id="extStations"></div>
+          </div>
+          <div class="field">
+            <label>Resolution</label>
+            <select id="extResolution">
+              <option>Hourly</option><option>Daily</option><option>Monthly</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Start date</label>
+            <input type="date" id="extStart" class="date-input">
+          </div>
+        </div>
+        <div style="display:flex;gap:14px;align-items:flex-end;margin-top:12px;">
+          <div class="field" style="max-width:220px;">
+            <label>End date</label>
+            <input type="date" id="extEnd" class="date-input">
+          </div>
+          <button class="btn btn-primary" id="btnQueueExtraction">Queue extraction</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>Jobs</h3></div>
+        <div id="jobList"></div>
+      </div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div class="view" id="view-settings">
+      <div class="card">
+        <div class="card-head"><h3>CORS proxy</h3></div>
+        <div class="callout">
+          <strong>Why this is needed</strong>
+          Inverter-brand APIs are called server-to-server in your Postman collections; most block direct requests from a browser. Deploy the Azure Function or Cloudflare Worker template in <code>/api-proxy</code> (see its README), then paste its base URL below.
+        </div>
+        <div class="field"><label>Proxy base URL</label><input id="cfgProxyUrl" placeholder="https://your-function.azurewebsites.net/api"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>Microsoft 365 / SharePoint</h3></div>
+        <div class="callout">
+          <strong>One-time setup</strong>
+          Register an Azure AD app (Single-page application, no client secret needed) with delegated Graph permissions <code>Sites.ReadWrite.All</code> and <code>Files.ReadWrite.All</code>, add this page's URL as a redirect URI, then fill in the IDs below. See <code>docs/SETUP.md</code> for the full walkthrough.
+        </div>
+        <div class="settings-grid">
+          <div class="field"><label>Azure AD Client ID</label><input id="cfgClientId"></div>
+          <div class="field"><label>Azure AD Tenant ID</label><input id="cfgTenantId"></div>
+          <div class="field" style="grid-column:1/-1;"><label>SharePoint site (e.g. contoso.sharepoint.com:/sites/SolarOps)</label><input id="cfgSiteUrl"></div>
+          <div class="field"><label>Document library</label><input id="cfgLibrary" placeholder="Documents"></div>
+          <div class="field"><label>Folder path (optional)</label><input id="cfgFolderPath" placeholder="e.g. API Data"></div>
+        </div>
+        <div class="field-help" style="margin-top:6px;">
+          The extraction workbook (<code>SolarExtractionData.xlsx</code>) is saved into this library/folder. The <code>SolarConnections</code> list is always at the site level, regardless of this setting.
+        </div>
+        <div style="margin-top:12px;display:flex;align-items:center;gap:12px;">
+          <button class="btn btn-primary" id="btnSaveSettings">Save settings</button>
+          <span id="settingsSavedNote" style="font-size:.82rem;color:var(--ok);"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>Daily automation (GitHub Actions)</h3></div>
+        <div class="callout">
+          This page can only run while it's open in a browser tab. For true unattended daily/hourly extraction, use the scheduled GitHub Action in <code>/.github/workflows/daily-extraction.yml</code> — it reads the same SharePoint connections list and writes to the same workbook. See <code>docs/SETUP.md</code>.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Add Company modal -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <div class="modal-top">
+      <h3>Add Inverter Brand</h3>
+      <button class="modal-close" id="btnModalClose">✕</button>
+    </div>
+    <div class="modal-sub">Select a brand and enter your API credentials</div>
+    <div class="field"><label>Company / site name</label><input id="companyNameInput" placeholder="e.g. Acen C&amp;I HK Limited"></div>
+    <div class="brand-grid" id="brandGrid"></div>
+    <div id="brandNotice"></div>
+    <div id="credFields"></div>
+    <div class="modal-actions">
+      <button class="btn" id="btnModalCancel">Cancel</button>
+      <button class="btn" id="btnSaveWithoutTest">Save without test</button>
+      <button class="btn btn-primary" id="btnTestConnect">Test &amp; Connect</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/msal/3.7.1/msal-browser.min.js"></script>
+<script src="js/brands.js"></script>
+<script src="js/signing.js"></script>
+<script src="js/proxy-client.js"></script>
+<script src="js/msgraph.js"></script>
+<script src="js/extraction.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
