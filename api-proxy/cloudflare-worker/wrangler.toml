@@ -1,0 +1,12 @@
+name = "solarlink-cors-proxy"
+main = "worker.js"
+compatibility_date = "2024-09-01"
+
+# GOOGLE_SPREADSHEET_ID isn't sensitive on its own (it's just an ID visible in
+# the sheet's URL), so it's fine as a plain var here. The two credential
+# values below are NOT set here — set them as encrypted secrets instead:
+#   wrangler secret put GOOGLE_SERVICE_ACCOUNT_EMAIL
+#   wrangler secret put GOOGLE_SERVICE_ACCOUNT_KEY
+# (paste the service account JSON key's "private_key" field value when prompted)
+[vars]
+GOOGLE_SPREADSHEET_ID = "PASTE_YOUR_SPREADSHEET_ID_HERE"

@@ -4,8 +4,9 @@ A multi-brand inverter monitoring **API connection + data extraction** tool
 for FusionSolar (Huawei), SolarEdge, Sungrow, Solis, Growatt, and SMA.
 
 - **Hosted as a static site** (GitHub Pages) — `index.html` + `js/`.
-- **Data lives in SharePoint** — connection credentials and extracted
-  readings are stored there via Microsoft Graph, not on GitHub.
+- **Data lives in a Google Sheet** — connection credentials and extracted
+  readings are stored there via a Google service account, held server-side
+  by your proxy (never in the browser). No Azure AD, no admin consent.
 - **Two ways to extract:** on-demand from the web page (pick a company,
   stations, resolution, date range → queue), or fully automated on a
   schedule via the included GitHub Action.
@@ -13,10 +14,11 @@ for FusionSolar (Huawei), SolarEdge, Sungrow, Solis, Growatt, and SMA.
 ## Quick start
 
 1. Read **[docs/SETUP.md](docs/SETUP.md)** first — there are three one-time
-   setup steps (a CORS proxy, two Azure AD app registrations, and pushing
-   this repo to GitHub Pages) before the app can do anything.
+   setup steps (deploy a CORS proxy, create a Google service account +
+   share a sheet with it, push this repo to GitHub Pages) before the app
+   can do anything.
 2. Open the hosted page, go to **Settings**, fill in the proxy URL and
-   Microsoft 365 details, save, then **Sign in with Microsoft**.
+   Google Spreadsheet ID, save.
 3. **Dashboard → + Add Company** to connect your first brand.
 4. **Extraction** tab to pull Hourly / Daily / Monthly data for a date range,
    or toggle **Daily auto-extract** on a company so the scheduled GitHub
@@ -29,13 +31,13 @@ index.html                     the app shell
 js/
   brands.js                    per-brand credential fields + API calls
   signing.js                   HMAC/MD5 request-signing helpers
-  proxy-client.js              talks to the CORS proxy
-  msgraph.js                   MSAL sign-in + SharePoint (Graph API) storage
+  proxy-client.js              talks to the CORS proxy (brand API relay)
+  sheets-client.js             talks to the proxy's Google Sheets relay
   extraction.js                quota-aware, resumable extraction job engine
   app.js                       UI wiring
 api-proxy/
-  azure-function/              CORS relay, Azure Functions flavor
-  cloudflare-worker/           CORS relay, Cloudflare Workers flavor
+  azure-function/               CorsProxy (brand relay) + SheetsProxy (Sheets relay)
+  cloudflare-worker/            same two jobs, one Worker (/relay and /sheets)
 automation/
   scripts/daily-extract.mjs    the scheduled job's extraction logic
 .github/workflows/

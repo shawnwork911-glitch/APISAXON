@@ -1,0 +1,11 @@
+{
+  "name": "solarlink-daily-extract",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Scheduled GitHub Action script: pulls new hourly readings for every Google-Sheets-registered connection and appends them to the Readings tab.",
+  "scripts": {
+    "extract": "node scripts/daily-extract.mjs"
+  },
+  "engines": { "node": ">=18" }
+}
