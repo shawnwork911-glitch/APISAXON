@@ -74,7 +74,8 @@ const BRANDS = {
         body: { userName: creds.username, systemCode: creds.systemCode },
       });
       if (!res.body?.success) {
-        throw new Error(res.body?.message || `Login failed (failCode ${res.body?.failCode ?? "?"})`);
+        const raw = typeof res.body === "string" ? res.body.slice(0, 400) : JSON.stringify(res.body ?? "").slice(0, 400);
+        throw new Error(res.body?.message || `Login failed (failCode ${res.body?.failCode ?? "?"}) — raw response: ${raw}`);
       }
       const token = res.body?.data?.xsrfToken || res.body?.xsrfToken || res.headers?.["xsrf-token"];
       if (!token) throw new Error("Login succeeded but no XSRF-TOKEN was returned.");
