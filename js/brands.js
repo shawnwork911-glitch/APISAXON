@@ -57,13 +57,13 @@ const BRANDS = {
       { key: "region", label: "Region Endpoint", type: "select", required: true,
         options: [
           { value: "intl", label: "Global — intl.fusionsolar.huawei.com", base: "https://intl.fusionsolar.huawei.com/thirdData" },
-          { value: "ap-sg5", label: "Asia-Pacific — sg5", base: "https://uni005eu5.fusionsolar.huawei.com/thirdData" },
+          { value: "ap-sg5", label: "Asia-Pacific — sg5", base: "https://sg5.fusionsolar.huawei.com/thirdData" },
           { value: "eu5", label: "Europe — eu5", base: "https://eu5.fusionsolar.huawei.com/thirdData" },
           { value: "custom", label: "Custom / override below", base: "" },
         ] },
-      { key: "baseUrl", label: "Base URL (override)", type: "text", required: false,
+      { key: "baseUrl", label: "Base URL", type: "text", required: false,
         placeholder: "https://intl.fusionsolar.huawei.com/thirdData",
-        help: "Only fill this in if you're on a regional endpoint or behind a proxy not listed above." },
+        help: "Auto-filled from the Region Endpoint picked above. Edit it only if your account uses a different gateway than the listed regions (or pick \"Custom / override below\" and type it in directly)." },
     ],
     async buildAuth(creds, call) {
       const base = creds.baseUrl?.trim() || BRANDS.fusionsolar.fields[2].options.find(o => o.value === creds.region)?.base;

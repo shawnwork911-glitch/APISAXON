@@ -184,6 +184,31 @@ const App = (() => {
     } else {
       notice.innerHTML = `<div class="callout"><strong>Verified against your Postman collection</strong>${escapeHtml(brand.quotaNote || "")}</div>`;
     }
+    wireRegionBaseUrlTie(brand);
+  }
+
+  // For brands whose "region" field maps to a known base URL (currently
+  // FusionSolar), auto-fill the Base URL field from whichever region is
+  // selected, so the correct endpoint doesn't have to be typed in by hand.
+  // The field stays editable — typing a different value overrides the tie
+  // until a region is picked again, matching the "override" label/help text.
+  function wireRegionBaseUrlTie(brand) {
+    const regionField = brand.fields.find(f => f.key === "region" && f.type === "select");
+    const baseUrlField = brand.fields.find(f => f.key === "baseUrl");
+    if (!regionField || !baseUrlField) return;
+    const regionEl = qs("cred_region");
+    const baseUrlEl = qs("cred_baseUrl");
+    if (!regionEl || !baseUrlEl) return;
+
+    const applyRegion = () => {
+      const opt = regionField.options.find(o => o.value === regionEl.value);
+      if (opt?.base) {
+        baseUrlEl.value = opt.base;
+        baseUrlEl.placeholder = opt.base;
+      }
+    };
+    applyRegion(); // fill it for whatever region is selected by default
+    regionEl.addEventListener("change", applyRegion);
   }
 
   function renderField(f) {
