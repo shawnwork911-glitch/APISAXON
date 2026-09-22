@@ -52,6 +52,8 @@ const App = (() => {
     });
     qs("btnAddCompany").addEventListener("click", openAddCompanyModal);
     qs("btnModalClose").addEventListener("click", closeAddCompanyModal);
+    qs("btnStationsModalClose").addEventListener("click", closeStationsModal);
+    qs("stationsModalOverlay").addEventListener("click", (e) => { if (e.target.id === "stationsModalOverlay") closeStationsModal(); });
     qs("btnModalCancel").addEventListener("click", closeAddCompanyModal);
     qs("btnSaveWithoutTest").addEventListener("click", () => saveConnectionFromModal(false));
     qs("btnTestConnect").addEventListener("click", () => saveConnectionFromModal(true));
@@ -124,7 +126,7 @@ const App = (() => {
       row.className = "company-row";
       row.innerHTML = `
         <div class="badge" style="background:${brand.color}">${brand.badge}</div>
-        <div class="company-main">
+        <div class="company-main" data-action="view-stations" data-id="${conn.id}">
           <div class="company-name">${escapeHtml(conn.companyName)}</div>
           <div class="company-sub">${brand.label} · ${(conn.stations || []).length} station(s)${conn.dailyAutoExtract ? " · Daily auto-extract on" : ""}</div>
         </div>
@@ -135,9 +137,33 @@ const App = (() => {
         </div>`;
       root.appendChild(row);
     }
+    root.querySelectorAll("[data-action='view-stations']").forEach(el => el.addEventListener("click", () => openStationsModal(el.dataset.id)));
     root.querySelectorAll("[data-action='extract']").forEach(b => b.addEventListener("click", () => { showView("extraction"); qs("extCompany").value = b.dataset.id; handleExtractionCompanyChange(); }));
-    root.querySelectorAll("[data-action='delete']").forEach(b => b.addEventListener("click", () => handleDeleteConnection(b.dataset.id)));
+    root.querySelectorAll("[data-action='delete']").forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); handleDeleteConnection(b.dataset.id); }));
   }
+
+  function openStationsModal(connId) {
+    const conn = connections.find(c => c.id === connId);
+    if (!conn) return;
+    const brand = BRANDS[conn.brand];
+    qs("stationsModalTitle").innerHTML = `<span class="badge" style="background:${brand.color};display:inline-flex;width:26px;height:26px;font-size:.62rem;vertical-align:middle;margin-right:8px;">${brand.badge}</span>${escapeHtml(conn.companyName)}`;
+    const list = qs("stationsModalList");
+    const stations = conn.stations || [];
+    if (!stations.length) {
+      list.innerHTML = `<div class="field-help">No stations cached yet — re-run "Test & Connect" on this company to fetch the station list.</div>`;
+    } else {
+      list.innerHTML = stations.map(s => `
+        <div class="station-list-item">
+          <div class="station-list-icon">⌂</div>
+          <div>
+            <div class="station-list-name">${escapeHtml(s.name)}</div>
+            <div class="station-list-code">Station code: ${escapeHtml(s.id)}</div>
+          </div>
+        </div>`).join("");
+    }
+    qs("stationsModalOverlay").classList.add("active");
+  }
+  function closeStationsModal() { qs("stationsModalOverlay").classList.remove("active"); }
 
   async function handleDeleteConnection(id) {
     if (!confirm("Remove this company connection? This does not delete anything on the vendor side.")) return;
