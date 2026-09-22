@@ -59,6 +59,13 @@ body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;backgroun
 /* Dashboard company rows */
 .company-row{display:flex;align-items:center;gap:14px;padding:12px 6px;border-bottom:1px solid var(--line);}
 .company-row:last-child{border-bottom:none;}
+.company-main{cursor:pointer;}
+.company-main:hover .company-name{color:var(--accent);}
+.station-list-item{display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid var(--line);}
+.station-list-item:last-child{border-bottom:none;}
+.station-list-icon{width:30px;height:30px;border-radius:7px;background:var(--panel2);display:flex;align-items:center;justify-content:center;color:var(--accent);flex-shrink:0;font-size:1rem;}
+.station-list-name{font-weight:600;font-size:.9rem;}
+.station-list-code{font-size:.76rem;color:var(--muted);}
 .badge{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.72rem;color:#fff;flex-shrink:0;}
 .company-main{flex:1;}
 .company-name{font-weight:600;}
@@ -224,6 +231,18 @@ body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;backgroun
         </div>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- Stations modal -->
+<div class="modal-overlay" id="stationsModalOverlay">
+  <div class="modal">
+    <div class="modal-top">
+      <h3 id="stationsModalTitle">Stations</h3>
+      <button class="modal-close" id="btnStationsModalClose">✕</button>
+    </div>
+    <div class="modal-sub">STATIONS</div>
+    <div id="stationsModalList" style="max-height:60vh;overflow-y:auto;"></div>
   </div>
 </div>
 
