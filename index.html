@@ -143,6 +143,23 @@ tbody tr:last-child td{border-bottom:none;}
 </style>
 </head>
 <body>
+
+<!-- Sign-in gate — nothing else is usable until this passes -->
+<div id="authGateOverlay" class="modal-overlay active" style="z-index:100;">
+  <div class="modal" style="max-width:420px;text-align:center;">
+    <div style="font-size:2rem;margin-bottom:6px;">☀</div>
+    <h3 style="margin-bottom:6px;">SolarLink Connect</h3>
+    <div class="field-help" style="margin-bottom:18px;">Sign in with an approved Google account to continue.</div>
+    <div id="authGateButton" style="display:flex;justify-content:center;margin-bottom:14px;"></div>
+    <div id="authGateNotConfigured" hidden class="callout warn" style="text-align:left;">
+      <strong>Not set up yet</strong>
+      No Google Sign-In Client ID configured. An admin needs to set one under Settings first — see <code>docs/SETUP.md</code>.
+      <div style="margin-top:10px;"><input id="authGateClientIdInput" placeholder="Paste OAuth Client ID"><button class="btn btn-primary" style="margin-top:8px;" id="authGateClientIdSave">Save &amp; continue</button></div>
+    </div>
+    <div id="authGateError" hidden class="callout warn" style="text-align:left;"></div>
+  </div>
+</div>
+
 <div class="layout">
   <div class="sidebar">
     <div class="brandmark">
@@ -167,6 +184,8 @@ tbody tr:last-child td{border-bottom:none;}
       </div>
       <div class="user">
         <a id="sheetLink" href="#" target="_blank" style="display:none;color:var(--accent);font-size:.82rem;">Open Google Sheet ↗</a>
+        <div id="authUserLabel" style="font-size:.82rem;color:var(--muted);margin-top:4px;"></div>
+        <button class="btn btn-ghost" id="btnSignOut" style="margin-top:4px;font-size:.76rem;padding:4px 10px;">Sign out</button>
       </div>
     </div>
 
@@ -318,13 +337,14 @@ tbody tr:last-child td{border-bottom:none;}
       </div>
 
       <div class="card">
-        <div class="card-head"><h3>Google Sheets</h3></div>
+        <div class="card-head"><h3>Google Sheets &amp; sign-in</h3></div>
         <div class="callout">
           <strong>One-time setup</strong>
-          Create a Google Sheet with two tabs — <code>Connections</code> and <code>Readings</code> — share it with your service account's email as Editor, then paste the sheet's ID below (the long string in its URL between <code>/d/</code> and <code>/edit</code>). No sign-in needed here — the proxy holds the service account credential. See <code>docs/SETUP.md</code> for the full walkthrough.
+          Create a Google Sheet with three tabs — <code>Connections</code>, <code>Readings</code>, and <code>Users</code> — share it with your service account's email as Editor, then paste the sheet's ID below (the long string in its URL between <code>/d/</code> and <code>/edit</code>). The Google Sign-In Client ID below is what lets people actually sign in — see <code>docs/SETUP.md</code> for creating both.
         </div>
         <div class="settings-grid">
           <div class="field" style="grid-column:1/-1;"><label>Google Spreadsheet ID</label><input id="cfgSpreadsheetId" placeholder="1AbCdEfGhIjKlMnOpQrStUvWxYz..."></div>
+          <div class="field" style="grid-column:1/-1;"><label>Google Sign-In Client ID</label><input id="cfgSignInClientId" placeholder="123456789-abc...apps.googleusercontent.com"></div>
         </div>
         <div style="margin-top:12px;display:flex;align-items:center;gap:12px;">
           <button class="btn btn-primary" id="btnSaveSettings">Save settings</button>
@@ -397,8 +417,10 @@ tbody tr:last-child td{border-bottom:none;}
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="js/brands.js"></script>
 <script src="js/signing.js"></script>
+<script src="js/auth-client.js"></script>
 <script src="js/proxy-client.js"></script>
 <script src="js/datepicker.js"></script>
 <script src="js/sheets-client.js"></script>
