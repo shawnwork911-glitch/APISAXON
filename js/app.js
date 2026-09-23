@@ -60,9 +60,23 @@ const App = (() => {
     qs("btnSaveSettings").addEventListener("click", handleSaveSettings);
     qs("btnQueueExtraction").addEventListener("click", handleQueueExtraction);
     qs("extCompany").addEventListener("change", handleExtractionCompanyChange);
-    qs("tmplFormat").addEventListener("change", () => { syncTemplateFieldVisibility(); saveTemplateSettingsForCurrentCompany(); });
-    ["tmplTzLabel", "tmplUtcOffset", "tmplFacilityId", "tmplMeterId", "tmplEacFacilityId", "tmplEacRegistryId", "tmplUnitOM"].forEach(id => {
-      qs(id).addEventListener("change", saveTemplateSettingsForCurrentCompany);
+    qs("tmplFormat").addEventListener("change", () => { onTemplateFormatChange(); });
+    ["tmplTzLabel", "tmplUtcOffset", "tmplUnitOM"].forEach(id => {
+      qs(id).addEventListener("change", () => { syncTemplateFormStateFromFixedFields(); saveTemplateSettingsForCurrentCompany(); });
+    });
+    qs("tmplStationFacilityTable").addEventListener("input", (e) => {
+      if (!e.target.classList.contains("stationFacilityInput")) return;
+      templateFormState.stationFacility[e.target.dataset.station] = e.target.value;
+      renderFacilityGroupsTable();
+    });
+    qs("tmplStationFacilityTable").addEventListener("change", saveTemplateSettingsForCurrentCompany);
+    qs("tmplFacilityGroupsTable").addEventListener("change", (e) => {
+      const fid = e.target.dataset.facility;
+      if (!fid) return;
+      templateFormState.facilityGroups[fid] = templateFormState.facilityGroups[fid] || {};
+      if (e.target.classList.contains("facilityMeterInput")) templateFormState.facilityGroups[fid].meterId = e.target.value;
+      if (e.target.classList.contains("facilityRegistrySelect")) templateFormState.facilityGroups[fid].eacRegistryId = e.target.value;
+      saveTemplateSettingsForCurrentCompany();
     });
   }
 
@@ -350,51 +364,97 @@ const App = (() => {
   }
 
   // ---------------------------- export format (Template 1 / 2) ----------------------------
+  // templateFormState is the live working copy for whichever company is currently selected
+  // in the Extraction tab — table inputs mutate it directly (event delegation), and it's
+  // persisted onto that connection whenever anything changes.
+  let templateFormState = null;
 
   function syncTemplateFieldVisibility() {
     const fmt = qs("tmplFormat").value;
     qs("tmplFieldsCommon").hidden = fmt === "raw";
     qs("tmplFieldsT1").hidden = fmt !== "1";
-    qs("tmplFieldsT2").hidden = fmt !== "2";
     qs("tmplFieldsUnit").hidden = fmt !== "2";
+    qs("tmplStationFacilityWrap").hidden = fmt === "raw";
+    qs("tmplFacilityGroupsWrap").hidden = fmt !== "2";
   }
 
   function loadTemplateSettingsIntoForm(conn) {
     const saved = conn.templateSettings;
     const fmt = saved?.template || "raw";
+    templateFormState = saved ? JSON.parse(JSON.stringify(saved)) : TemplateExport.defaultSettings("1");
+    templateFormState.template = fmt;
+    templateFormState.stationFacility = templateFormState.stationFacility || {};
+    templateFormState.facilityGroups = templateFormState.facilityGroups || {};
+
     qs("tmplFormat").value = fmt;
-    const s = saved || TemplateExport.defaultSettings("1");
-    qs("tmplTzLabel").value = s.tzLabel ?? "SGT";
-    qs("tmplUtcOffset").value = s.utcOffset ?? 8;
-    qs("tmplFacilityId").value = s.facilityId ?? "";
-    qs("tmplMeterId").value = s.meterId ?? "";
-    qs("tmplEacFacilityId").value = s.eacFacilityId ?? "";
-    qs("tmplEacRegistryId").value = s.eacRegistryId ?? "tigr";
-    qs("tmplUnitOM").value = s.unitOM ?? "MWh";
+    qs("tmplTzLabel").value = templateFormState.tzLabel ?? "SGT";
+    qs("tmplUtcOffset").value = templateFormState.utcOffset ?? 8;
+    qs("tmplUnitOM").value = templateFormState.unitOM ?? "MWh";
     syncTemplateFieldVisibility();
+    renderStationFacilityTable(conn);
+    renderFacilityGroupsTable();
   }
 
-  function readTemplateSettingsFromForm() {
-    const fmt = qs("tmplFormat").value;
-    if (fmt === "raw") return { template: "raw" };
-    return {
-      template: fmt,
-      tzLabel: qs("tmplTzLabel").value.trim(),
-      utcOffset: parseFloat(qs("tmplUtcOffset").value) || 0,
-      facilityId: qs("tmplFacilityId").value.trim(),
-      meterId: qs("tmplMeterId").value.trim(),
-      eacFacilityId: qs("tmplEacFacilityId").value.trim(),
-      eacRegistryId: qs("tmplEacRegistryId").value,
-      unitOM: qs("tmplUnitOM").value,
-    };
+  function onTemplateFormatChange() {
+    if (!templateFormState) templateFormState = TemplateExport.defaultSettings("1");
+    templateFormState.template = qs("tmplFormat").value;
+    if (templateFormState.template === "1") { templateFormState.tzLabel = templateFormState.tzLabel || "SGT"; }
+    if (templateFormState.template === "2") { templateFormState.tzLabel = templateFormState.tzLabel || "Asia/Singapore"; templateFormState.unitOM = templateFormState.unitOM || "MWh"; }
+    qs("tmplTzLabel").value = templateFormState.tzLabel || "SGT";
+    syncTemplateFieldVisibility();
+    saveTemplateSettingsForCurrentCompany();
+  }
+
+  function syncTemplateFormStateFromFixedFields() {
+    if (!templateFormState) return;
+    templateFormState.tzLabel = qs("tmplTzLabel").value.trim();
+    templateFormState.utcOffset = parseFloat(qs("tmplUtcOffset").value) || 0;
+    templateFormState.unitOM = qs("tmplUnitOM").value;
+  }
+
+  function renderStationFacilityTable(conn) {
+    const wrap = qs("tmplStationFacilityTable");
+    const stations = conn.stations || [];
+    if (!stations.length) {
+      wrap.innerHTML = `<tbody><tr><td class="field-help">No cached stations for this company yet.</td></tr></tbody>`;
+      return;
+    }
+    wrap.innerHTML = `<thead><tr><th>Station</th><th>facility_id</th></tr></thead><tbody>` +
+      stations.map(s => `
+        <tr>
+          <td>${escapeHtml(s.name)}<div class="field-help">${escapeHtml(s.id)}</div></td>
+          <td><input type="text" class="stationFacilityInput" data-station="${escapeHtml(s.id)}"
+                     value="${escapeHtml(templateFormState.stationFacility[s.id] || "")}"
+                     placeholder="${escapeHtml(s.id)}"></td>
+        </tr>`).join("") + `</tbody>`;
+  }
+
+  function renderFacilityGroupsTable() {
+    const wrap = qs("tmplFacilityGroupsTable");
+    const distinct = [...new Set(Object.values(templateFormState.stationFacility).filter(v => v && v.trim()))];
+    if (!distinct.length) {
+      wrap.innerHTML = `<tbody><tr><td class="field-help">No facility_id assigned yet — enter one above to see its group settings here.</td></tr></tbody>`;
+      return;
+    }
+    wrap.innerHTML = `<thead><tr><th>facility_id</th><th>meter_id</th><th>eac_registry_id</th></tr></thead><tbody>` +
+      distinct.map(fid => {
+        const g = templateFormState.facilityGroups[fid] || {};
+        return `<tr>
+          <td>${escapeHtml(fid)}</td>
+          <td><input type="text" class="facilityMeterInput" data-facility="${escapeHtml(fid)}" value="${escapeHtml(g.meterId || "")}" placeholder="${escapeHtml(fid)}"></td>
+          <td><select class="facilityRegistrySelect" data-facility="${escapeHtml(fid)}">
+                <option value="tigr" ${g.eacRegistryId !== "irec" ? "selected" : ""}>TIGR</option>
+                <option value="irec" ${g.eacRegistryId === "irec" ? "selected" : ""}>I-REC</option>
+              </select></td>
+        </tr>`;
+      }).join("") + `</tbody>`;
   }
 
   async function saveTemplateSettingsForCurrentCompany() {
-    syncTemplateFieldVisibility();
     const id = qs("extCompany").value;
     const conn = connections.find(c => c.id === id);
-    if (!conn) return; // nothing selected yet — just a format-field preview change
-    conn.templateSettings = readTemplateSettingsFromForm();
+    if (!conn || !templateFormState) return;
+    conn.templateSettings = templateFormState;
     await SheetsClient.saveConnection(conn).catch(() => {}); // best-effort — a later save will retry
   }
 
@@ -429,7 +489,7 @@ const App = (() => {
       connection: conn, brand: conn.brand, resolution, startDate, endDate, stationIds,
       onProgress: (j) => renderJobProgress(jobRow, j, startDate, endDate),
     });
-    job.exportSettings = readTemplateSettingsFromForm();
+    job.exportSettings = JSON.parse(JSON.stringify(templateFormState || { template: "raw" }));
     await ExtractionEngine.run(job.id, ctx);
 
     if (job.status === "done" && job.rowsCollected.length) {
@@ -470,27 +530,36 @@ const App = (() => {
 
   function downloadRowsAsExcel(job) {
     const fmt = job.exportSettings?.template;
-    let ws, sheetName, filenameSuffix;
 
     if ((fmt === "1" || fmt === "2") && job.resolution === "Hourly") {
-      const { headers, rows } = TemplateExport.build(job.rowsCollected, job.brand, job.exportSettings);
-      ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-      sheetName = fmt === "1" ? "Data" : "MeterData";
-      filenameSuffix = fmt === "1" ? "template_1" : "template_2";
-    } else {
-      const rows = job.rowsCollected.map(r => ({
-        Timestamp: r.timestamp,
-        Station: (job.connection.stations.find(s => s.id === r.stationId) || {}).name || r.stationId,
-        Resolution: job.resolution,
-        kWh: r.kwh,
-      }));
-      ws = XLSX.utils.json_to_sheet(rows);
-      sheetName = job.resolution;
-      filenameSuffix = "raw";
+      const groups = TemplateExport.build(job.rowsCollected, job.brand, job.exportSettings);
+      if (!groups.length) { alert("No rows to export."); return; }
+      const sheetName = fmt === "1" ? "Data" : "MeterData";
+      const filenameSuffix = fmt === "1" ? "template_1" : "template_2";
+      // One workbook per distinct facility_id — mirrors the reference converter's
+      // "each group becomes its own output file" behaviour when stations are summed
+      // into separate facilities. Sequential writeFile calls trigger one browser
+      // download prompt per file.
+      groups.forEach(g => {
+        const ws = XLSX.utils.aoa_to_sheet([g.headers, ...g.rows]);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, sheetName);
+        const safeFacility = g.facilityId.replace(/[^a-z0-9_-]+/gi, "_");
+        XLSX.writeFile(wb, `${job.connection.companyName}_${safeFacility}_${job.startDate}_${job.endDate}_${filenameSuffix}.xlsx`);
+      });
+      return;
     }
+
+    const rows = job.rowsCollected.map(r => ({
+      Timestamp: r.timestamp,
+      Station: (job.connection.stations.find(s => s.id === r.stationId) || {}).name || r.stationId,
+      Resolution: job.resolution,
+      kWh: r.kwh,
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, sheetName);
-    XLSX.writeFile(wb, `${job.connection.companyName}_${job.resolution}_${job.startDate}_${job.endDate}_${filenameSuffix}.xlsx`);
+    XLSX.utils.book_append_sheet(wb, ws, job.resolution);
+    XLSX.writeFile(wb, `${job.connection.companyName}_${job.resolution}_${job.startDate}_${job.endDate}_raw.xlsx`);
   }
 
   function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
