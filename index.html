@@ -100,6 +100,7 @@ body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;backgroun
 .station-box{max-height:150px;overflow-y:auto;background:#0f141c;border:1px solid var(--line);border-radius:8px;padding:8px 10px;}
 .station-row{display:flex;align-items:center;gap:8px;font-size:.85rem;padding:3px 0;}
 .job-row{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px;background:var(--panel2);}
+.job-row .btn{margin-top:8px;margin-right:6px;}
 .job-title{font-size:.86rem;margin-bottom:8px;}
 .job-bar{height:6px;background:#0f141c;border-radius:99px;overflow:hidden;margin-bottom:8px;}
 .job-bar-fill{height:100%;width:0;background:var(--accent);transition:width .2s ease;}
@@ -277,13 +278,28 @@ body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;backgroun
 
 <!-- Stations modal -->
 <div class="modal-overlay" id="stationsModalOverlay">
-  <div class="modal">
+  <div class="modal" style="max-width:720px;">
     <div class="modal-top">
       <h3 id="stationsModalTitle">Stations</h3>
       <button class="modal-close" id="btnStationsModalClose">✕</button>
     </div>
-    <div class="modal-sub">STATIONS</div>
-    <div id="stationsModalList" style="max-height:60vh;overflow-y:auto;"></div>
+    <div class="modal-sub">STATIONS &amp; TEMPLATE EXPORT IDENTIFIERS</div>
+    <div class="field-help" style="margin-bottom:8px;">
+      facility_id ties stations together for Template 1/2 exports — stations sharing one are summed per hour into a single output. meter_id / eac_registry_id are used only for Template 2 and can be left blank to default to the facility_id.
+    </div>
+    <div class="table-scroll" style="max-height:280px;">
+      <table id="stationsModalTable"></table>
+    </div>
+    <div id="stationsModalFacilityWrap" style="margin-top:16px;">
+      <label style="display:block;font-size:.74rem;color:var(--muted);letter-spacing:.03em;margin-bottom:6px;">FACILITY DETAILS (Template 2)</label>
+      <div class="table-scroll" style="max-height:220px;">
+        <table id="stationsModalFacilityTable"></table>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <span id="stationsModalSavedNote" style="font-size:.82rem;color:var(--ok);margin-right:auto;"></span>
+      <button class="btn btn-primary" id="btnStationsModalDone">Done</button>
+    </div>
   </div>
 </div>
 
