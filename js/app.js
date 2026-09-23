@@ -150,12 +150,16 @@ const App = (() => {
         </div>
         <div class="company-status">${brand.confidence === "verified" ? "<span class=\"pill ok\">Ready</span>" : "<span class=\"pill warn\">Untested endpoints</span>"}</div>
         <div class="company-actions">
+          <button class="btn ${conn.dailyAutoExtract ? "btn-primary" : "btn-ghost"}" data-action="toggle-auto" data-id="${conn.id}">
+            ${conn.dailyAutoExtract ? "Daily auto: ON" : "Daily auto: OFF"}
+          </button>
           <button class="btn btn-ghost" data-action="extract" data-id="${conn.id}">Extract</button>
           <button class="btn btn-ghost" data-action="delete" data-id="${conn.id}">Remove</button>
         </div>`;
       root.appendChild(row);
     }
     root.querySelectorAll("[data-action='view-stations']").forEach(el => el.addEventListener("click", () => openStationsModal(el.dataset.id)));
+    root.querySelectorAll("[data-action='toggle-auto']").forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); handleToggleAutoExtract(b.dataset.id); }));
     root.querySelectorAll("[data-action='extract']").forEach(b => b.addEventListener("click", () => { showView("extraction"); qs("extCompany").value = b.dataset.id; handleExtractionCompanyChange(); }));
     root.querySelectorAll("[data-action='delete']").forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); handleDeleteConnection(b.dataset.id); }));
   }
@@ -182,6 +186,19 @@ const App = (() => {
     qs("stationsModalOverlay").classList.add("active");
   }
   function closeStationsModal() { qs("stationsModalOverlay").classList.remove("active"); }
+
+  async function handleToggleAutoExtract(id) {
+    const conn = connections.find(c => c.id === id);
+    if (!conn) return;
+    conn.dailyAutoExtract = !conn.dailyAutoExtract;
+    try {
+      await SheetsClient.saveConnection(conn);
+    } catch (e) {
+      conn.dailyAutoExtract = !conn.dailyAutoExtract; // revert on failure
+      alert(`Could not save: ${e.message}`);
+    }
+    renderDashboard();
+  }
 
   async function handleDeleteConnection(id) {
     if (!confirm("Remove this company connection? This does not delete anything on the vendor side.")) return;
@@ -490,9 +507,20 @@ const App = (() => {
       onProgress: (j) => renderJobProgress(jobRow, j, startDate, endDate),
     });
     job.exportSettings = JSON.parse(JSON.stringify(templateFormState || { template: "raw" }));
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "btn btn-ghost job-cancel";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", () => {
+      ExtractionEngine.stop(job.id);
+      cancelBtn.disabled = true;
+      cancelBtn.textContent = "Cancelling…";
+    });
+    jobRow.appendChild(cancelBtn);
+
     await ExtractionEngine.run(job.id, ctx);
 
-    if (job.status === "done" && job.rowsCollected.length) {
+    if ((job.status === "done" || job.status === "paused" || job.status === "stopped") && job.rowsCollected.length) {
       try {
         await SheetsClient.appendReadings(job.rowsCollected.map(r => ({
           timestamp: r.timestamp, company: conn.companyName, brand: brand.label,
@@ -516,9 +544,15 @@ const App = (() => {
     jobRow.querySelector(".job-bar-fill").style.width = `${pct}%`;
     let statusText = `${job.rowsCollected.length} rows · ${job.status}`;
     if (job.status === "paused" && job.pausedReason === "quota") statusText += " (daily quota reached — resumes tomorrow / next run)";
+    if (job.status === "stopped") statusText = `${job.rowsCollected.length} rows · Cancelled`;
     if (job.status === "error") statusText = `Error: ${job.error}`;
     jobRow.querySelector(".job-status").textContent = statusText;
-    if ((job.status === "done" || job.status === "paused") && job.rowsCollected.length && !jobRow.querySelector(".job-download")) {
+
+    if (job.status !== "running" && job.status !== "queued") {
+      const cancelBtn = jobRow.querySelector(".job-cancel");
+      if (cancelBtn) cancelBtn.remove();
+    }
+    if ((job.status === "done" || job.status === "paused" || job.status === "stopped") && job.rowsCollected.length && !jobRow.querySelector(".job-download")) {
       const dl = document.createElement("button");
       dl.className = "btn btn-ghost job-download";
       const fmt = job.exportSettings?.template;
