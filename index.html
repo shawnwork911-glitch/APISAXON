@@ -209,20 +209,27 @@ body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;backgroun
           <div class="field"><label>Local timezone label</label><input id="tmplTzLabel"></div>
           <div class="field"><label>UTC offset (hours)</label><input id="tmplUtcOffset" type="number" step="0.5"></div>
         </div>
-        <div id="tmplFieldsT1" hidden class="field" style="max-width:340px;">
-          <label>facility_id</label><input id="tmplFacilityId" placeholder="e.g. GEN3294">
-        </div>
-        <div id="tmplFieldsT2" hidden class="extraction-grid" style="grid-template-columns:1fr 1fr 1fr;">
-          <div class="field"><label>meter_id</label><input id="tmplMeterId" placeholder="e.g. GEN3294"></div>
-          <div class="field"><label>eac_facility_id</label><input id="tmplEacFacilityId" placeholder="e.g. GEN3294"></div>
-          <div class="field">
-            <label>eac_registry_id</label>
-            <select id="tmplEacRegistryId"><option value="tigr">TIGR</option><option value="irec">I-REC</option></select>
-          </div>
+        <div id="tmplFieldsT1" hidden class="field">
+          <label>facility_id for unassigned stations</label>
+          <div class="field-help">Set per-station below — this is just what's used if a station is left blank.</div>
         </div>
         <div id="tmplFieldsUnit" hidden class="field" style="max-width:160px;">
           <label>unit_of_measurement</label>
           <select id="tmplUnitOM"><option value="MWh">MWh</option><option value="kWh">kWh</option></select>
+        </div>
+        <div id="tmplStationFacilityWrap" hidden>
+          <label>Station → facility_id</label>
+          <div class="field-help" style="margin-bottom:6px;">Stations sharing the same facility_id have their hourly readings <strong>summed</strong> into one row per hour and land in the same output file. Leave a station blank to keep it as its own separate facility.</div>
+          <div class="table-scroll" style="max-height:220px;">
+            <table id="tmplStationFacilityTable"></table>
+          </div>
+        </div>
+        <div id="tmplFacilityGroupsWrap" hidden>
+          <label>Facility groups (Template 2 details)</label>
+          <div class="field-help" style="margin-bottom:6px;">One row per distinct facility_id entered above — meter_id defaults to the facility_id itself if left blank (matches your existing exports).</div>
+          <div class="table-scroll" style="max-height:220px;">
+            <table id="tmplFacilityGroupsTable"></table>
+          </div>
         </div>
       </div>
 
