@@ -55,6 +55,9 @@ const SheetsClient = (() => {
   async function appendReadings(rows) {
     return call("appendReadings", { rows });
   }
+  async function listReadings(company) {
+    return call("listReadings", { company });
+  }
 
-  return { loadConfig, saveConfig, isConfigured, sheetUrl, listConnections, saveConnection, deleteConnection, appendReadings };
+  return { loadConfig, saveConfig, isConfigured, sheetUrl, listConnections, saveConnection, deleteConnection, appendReadings, listReadings };
 })();

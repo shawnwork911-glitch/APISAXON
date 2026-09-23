@@ -43,7 +43,7 @@ const App = (() => {
   }
 
   function cacheEls() {
-    ["dashboard", "extraction", "settings"].forEach(v => els[v] = qs(`view-${v}`));
+    ["dashboard", "extraction", "compare", "settings"].forEach(v => els[v] = qs(`view-${v}`));
   }
 
   function wireStaticEvents() {
@@ -95,6 +95,8 @@ const App = (() => {
       if (e.target.classList.contains("facilityRegistrySelect")) templateFormState.facilityGroups[fid].eacRegistryId = e.target.value;
       saveTemplateSettingsForCurrentCompany();
     });
+    qs("btnRunCompare").addEventListener("click", handleRunCompare);
+    qs("btnDownloadCompare").addEventListener("click", handleDownloadCompare);
   }
 
   function showView(view) {
@@ -102,6 +104,7 @@ const App = (() => {
     Object.entries(els).forEach(([k, el]) => el.classList.toggle("active", k === view));
     document.querySelectorAll(".nav-btn[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === view));
     if (view === "extraction") populateExtractionCompanySelect();
+    if (view === "compare") populateCompareCompanySelect();
   }
 
   /* ---------------------------- settings / connection status ---------------------------- */
@@ -464,6 +467,86 @@ const App = (() => {
       opt.value = c.id; opt.textContent = `${c.companyName} (${BRANDS[c.brand].label})`;
       sel.appendChild(opt);
     });
+  }
+
+  /* ---------------------------- compare (hourly vs monthly) ---------------------------- */
+
+  let lastCompareResult = null; // kept around for the Download Excel button
+
+  function populateCompareCompanySelect() {
+    const sel = qs("cmpCompany");
+    sel.innerHTML = `<option value="">Select a company…</option>`;
+    connections.forEach(c => {
+      const opt = document.createElement("option");
+      opt.value = c.id; opt.textContent = `${c.companyName} (${BRANDS[c.brand].label})`;
+      sel.appendChild(opt);
+    });
+  }
+
+  async function handleRunCompare() {
+    const id = qs("cmpCompany").value;
+    const conn = connections.find(c => c.id === id);
+    if (!conn) { alert("Pick a company first."); return; }
+
+    qs("btnRunCompare").disabled = true;
+    qs("cmpStatus").textContent = "Reading Hourly and Monthly rows from your Google Sheet…";
+    qs("cmpResultsCard").hidden = true;
+
+    try {
+      const readings = await SheetsClient.listReadings(conn.companyName);
+      const result = CompareEngine.compareHourlyVsMonthly(readings, conn);
+      lastCompareResult = { conn, result };
+      renderCompareResults(conn, result);
+      qs("cmpStatus").textContent = `Done — ${readings.length} row(s) read.`;
+    } catch (e) {
+      qs("cmpStatus").textContent = `Failed: ${e.message}`;
+    }
+    qs("btnRunCompare").disabled = false;
+  }
+
+  function renderCompareResults(conn, result) {
+    qs("cmpResultsCard").hidden = false;
+    const noHourly = !result.hourlyMonths.length;
+    const noMonthly = !result.monthlyMonths.length;
+    let summary = `Checked ${result.totalChecked} facility-month combination(s). `;
+    if (noHourly || noMonthly) {
+      summary += `<strong style="color:var(--warn);">Missing ${noHourly ? "Hourly" : "Monthly"} data entirely for this company — run that extraction first.</strong>`;
+    } else if (!result.flagged.length) {
+      summary += `<span style="color:var(--ok);">No discrepancies found — hourly and monthly figures match for every checked month.</span>`;
+    } else {
+      summary += `<strong style="color:var(--warn);">${result.flagged.length} month(s) flagged.</strong>`;
+    }
+    qs("cmpSummary").innerHTML = summary;
+
+    const table = qs("cmpResultsTable");
+    if (!result.flagged.length) {
+      table.innerHTML = "";
+      return;
+    }
+    table.innerHTML = `<thead><tr><th>facility_id</th><th>Month</th><th>Monthly report (kWh)</th><th>Hourly sum (kWh)</th><th>Diff (kWh)</th><th>Diff (%)</th><th>Issue</th></tr></thead><tbody>` +
+      result.flagged.map(r => `
+        <tr>
+          <td>${escapeHtml(r.facilityId)}</td>
+          <td>${escapeHtml(r.month)}</td>
+          <td>${r.monthlyKwh}</td>
+          <td>${r.hourlyKwh}</td>
+          <td>${r.diffKwh}</td>
+          <td>${r.diffPct}%</td>
+          <td>${escapeHtml(r.issue)}</td>
+        </tr>`).join("") + `</tbody>`;
+  }
+
+  function handleDownloadCompare() {
+    if (!lastCompareResult) return;
+    const { conn, result } = lastCompareResult;
+    const headers = ["facility_id", "Month", "Monthly report (kWh)", "Hourly sum (kWh)", "Diff (kWh)", "Diff (%)", "Issue"];
+    const rows = result.flagged.length
+      ? result.flagged.map(r => [r.facilityId, r.month, r.monthlyKwh, r.hourlyKwh, r.diffKwh, r.diffPct, r.issue])
+      : [["No discrepancies found", "", "", "", "", "", ""]];
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "HourlyVsMonthly");
+    XLSX.writeFile(wb, `${conn.companyName}_HourlyVsMonthly.xlsx`);
   }
 
   async function handleExtractionCompanyChange() {

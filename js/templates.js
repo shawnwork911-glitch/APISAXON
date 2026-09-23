@@ -128,7 +128,7 @@ const TemplateExport = (() => {
     return groups;
   }
 
-  return { headersFor, defaultSettings, facilityKeyFor, build };
+  return { headersFor, defaultSettings, facilityKeyFor, build, wallClockFromRow };
 })();
 
 if (typeof module !== "undefined") module.exports = TemplateExport;
