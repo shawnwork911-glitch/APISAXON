@@ -60,6 +60,10 @@ const App = (() => {
     qs("btnSaveSettings").addEventListener("click", handleSaveSettings);
     qs("btnQueueExtraction").addEventListener("click", handleQueueExtraction);
     qs("extCompany").addEventListener("change", handleExtractionCompanyChange);
+    qs("tmplFormat").addEventListener("change", () => { syncTemplateFieldVisibility(); saveTemplateSettingsForCurrentCompany(); });
+    ["tmplTzLabel", "tmplUtcOffset", "tmplFacilityId", "tmplMeterId", "tmplEacFacilityId", "tmplEacRegistryId", "tmplUnitOM"].forEach(id => {
+      qs(id).addEventListener("change", saveTemplateSettingsForCurrentCompany);
+    });
   }
 
   function showView(view) {
@@ -342,6 +346,56 @@ const App = (() => {
     if (!conn.stations?.length) {
       stationBox.innerHTML = `<div class="field-help">No stations cached yet — re-run "Test & Connect" on this company to fetch the station list.</div>`;
     }
+    loadTemplateSettingsIntoForm(conn);
+  }
+
+  // ---------------------------- export format (Template 1 / 2) ----------------------------
+
+  function syncTemplateFieldVisibility() {
+    const fmt = qs("tmplFormat").value;
+    qs("tmplFieldsCommon").hidden = fmt === "raw";
+    qs("tmplFieldsT1").hidden = fmt !== "1";
+    qs("tmplFieldsT2").hidden = fmt !== "2";
+    qs("tmplFieldsUnit").hidden = fmt !== "2";
+  }
+
+  function loadTemplateSettingsIntoForm(conn) {
+    const saved = conn.templateSettings;
+    const fmt = saved?.template || "raw";
+    qs("tmplFormat").value = fmt;
+    const s = saved || TemplateExport.defaultSettings("1");
+    qs("tmplTzLabel").value = s.tzLabel ?? "SGT";
+    qs("tmplUtcOffset").value = s.utcOffset ?? 8;
+    qs("tmplFacilityId").value = s.facilityId ?? "";
+    qs("tmplMeterId").value = s.meterId ?? "";
+    qs("tmplEacFacilityId").value = s.eacFacilityId ?? "";
+    qs("tmplEacRegistryId").value = s.eacRegistryId ?? "tigr";
+    qs("tmplUnitOM").value = s.unitOM ?? "MWh";
+    syncTemplateFieldVisibility();
+  }
+
+  function readTemplateSettingsFromForm() {
+    const fmt = qs("tmplFormat").value;
+    if (fmt === "raw") return { template: "raw" };
+    return {
+      template: fmt,
+      tzLabel: qs("tmplTzLabel").value.trim(),
+      utcOffset: parseFloat(qs("tmplUtcOffset").value) || 0,
+      facilityId: qs("tmplFacilityId").value.trim(),
+      meterId: qs("tmplMeterId").value.trim(),
+      eacFacilityId: qs("tmplEacFacilityId").value.trim(),
+      eacRegistryId: qs("tmplEacRegistryId").value,
+      unitOM: qs("tmplUnitOM").value,
+    };
+  }
+
+  async function saveTemplateSettingsForCurrentCompany() {
+    syncTemplateFieldVisibility();
+    const id = qs("extCompany").value;
+    const conn = connections.find(c => c.id === id);
+    if (!conn) return; // nothing selected yet — just a format-field preview change
+    conn.templateSettings = readTemplateSettingsFromForm();
+    await SheetsClient.saveConnection(conn).catch(() => {}); // best-effort — a later save will retry
   }
 
   async function handleQueueExtraction() {
@@ -375,6 +429,7 @@ const App = (() => {
       connection: conn, brand: conn.brand, resolution, startDate, endDate, stationIds,
       onProgress: (j) => renderJobProgress(jobRow, j, startDate, endDate),
     });
+    job.exportSettings = readTemplateSettingsFromForm();
     await ExtractionEngine.run(job.id, ctx);
 
     if (job.status === "done" && job.rowsCollected.length) {
@@ -406,23 +461,36 @@ const App = (() => {
     if ((job.status === "done" || job.status === "paused") && job.rowsCollected.length && !jobRow.querySelector(".job-download")) {
       const dl = document.createElement("button");
       dl.className = "btn btn-ghost job-download";
-      dl.textContent = "Download Excel";
+      const fmt = job.exportSettings?.template;
+      dl.textContent = fmt === "1" ? "Download (Template 1)" : fmt === "2" ? "Download (Template 2)" : "Download Excel";
       dl.addEventListener("click", () => downloadRowsAsExcel(job));
       jobRow.appendChild(dl);
     }
   }
 
   function downloadRowsAsExcel(job) {
-    const rows = job.rowsCollected.map(r => ({
-      Timestamp: r.timestamp,
-      Station: (job.connection.stations.find(s => s.id === r.stationId) || {}).name || r.stationId,
-      Resolution: job.resolution,
-      kWh: r.kwh,
-    }));
-    const ws = XLSX.utils.json_to_sheet(rows);
+    const fmt = job.exportSettings?.template;
+    let ws, sheetName, filenameSuffix;
+
+    if ((fmt === "1" || fmt === "2") && job.resolution === "Hourly") {
+      const { headers, rows } = TemplateExport.build(job.rowsCollected, job.brand, job.exportSettings);
+      ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+      sheetName = fmt === "1" ? "Data" : "MeterData";
+      filenameSuffix = fmt === "1" ? "template_1" : "template_2";
+    } else {
+      const rows = job.rowsCollected.map(r => ({
+        Timestamp: r.timestamp,
+        Station: (job.connection.stations.find(s => s.id === r.stationId) || {}).name || r.stationId,
+        Resolution: job.resolution,
+        kWh: r.kwh,
+      }));
+      ws = XLSX.utils.json_to_sheet(rows);
+      sheetName = job.resolution;
+      filenameSuffix = "raw";
+    }
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, job.resolution);
-    XLSX.writeFile(wb, `${job.connection.companyName}_${job.resolution}_${job.startDate}_${job.endDate}.xlsx`);
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+    XLSX.writeFile(wb, `${job.connection.companyName}_${job.resolution}_${job.startDate}_${job.endDate}_${filenameSuffix}.xlsx`);
   }
 
   function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
