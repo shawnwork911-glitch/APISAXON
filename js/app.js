@@ -47,6 +47,8 @@ const App = (() => {
   }
 
   function wireStaticEvents() {
+    DatePicker.attach(qs("extStart"));
+    DatePicker.attach(qs("extEnd"));
     document.querySelectorAll(".nav-btn[data-view]").forEach(btn => {
       btn.addEventListener("click", () => showView(btn.dataset.view));
     });
@@ -673,8 +675,8 @@ const App = (() => {
     if (!conn) { alert("Pick a company first."); return; }
     const stationIds = [...qs("extStations").querySelectorAll("input:checked")].map(i => i.value);
     const resolution = qs("extResolution").value;
-    const startDate = qs("extStart").value;
-    const endDate = qs("extEnd").value;
+    const startDate = DatePicker.getISO(qs("extStart"));
+    const endDate = DatePicker.getISO(qs("extEnd"));
     if (!startDate || !endDate) { alert("Pick a start and end date."); return; }
 
     const brand = BRANDS[conn.brand];
