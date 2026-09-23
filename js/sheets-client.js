@@ -32,16 +32,24 @@ const SheetsClient = (() => {
     if (!proxyBase) throw new Error("No proxy URL configured yet — set it under Settings → CORS Proxy.");
     const cfg = loadConfig();
     if (!cfg?.spreadsheetId) throw new Error("No Google Sheet configured yet — set the Spreadsheet ID under Settings → Google Sheets.");
+    const token = typeof AuthClient !== "undefined" ? AuthClient.getToken() : null;
     const resp = await fetch(`${proxyBase}/sheets`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({ action, ...extra }),
     });
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(data.error || `Sheets proxy error ${resp.status}`);
+    if (!resp.ok) {
+      const err = new Error(data.error || `Sheets proxy error ${resp.status}`);
+      err.code = data.code;
+      throw err;
+    }
     return data;
   }
 
+  async function whoAmI() {
+    return call("whoAmI");
+  }
   async function listConnections() {
     return call("listConnections");
   }
@@ -59,5 +67,5 @@ const SheetsClient = (() => {
     return call("listReadings", { company });
   }
 
-  return { loadConfig, saveConfig, isConfigured, sheetUrl, listConnections, saveConnection, deleteConnection, appendReadings, listReadings };
+  return { loadConfig, saveConfig, isConfigured, sheetUrl, whoAmI, listConnections, saveConnection, deleteConnection, appendReadings, listReadings };
 })();

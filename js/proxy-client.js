@@ -20,6 +20,11 @@ const ProxyClient = (() => {
   }
   function getProxyBaseUrl() { return proxyBaseUrl; }
 
+  function authHeader() {
+    const token = typeof AuthClient !== "undefined" ? AuthClient.getToken() : null;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+
   /**
    * call(brandKey, { url, method, headers, body, isForm })
    * Returns { status, body (parsed JSON if possible, else text), headers }
@@ -38,7 +43,7 @@ const ProxyClient = (() => {
     };
     const resp = await fetch(`${proxyBaseUrl}/relay`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeader() },
       body: JSON.stringify(payload),
     });
     const text = await resp.text();

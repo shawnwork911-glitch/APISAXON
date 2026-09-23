@@ -10,12 +10,14 @@
 // localStorage always wins over these defaults.
 const DEFAULT_PROXY_BASE_URL = "https://solarlink-cors-proxy.saxon-solarlink.workers.dev";
 const DEFAULT_SPREADSHEET_ID = "1Sq2AYWWDOBvlrrvcesw3bxrJHWE0xe-m5i_qkG46BCY";
+const DEFAULT_SIGNIN_CLIENT_ID = "336493659847-g7ip6cjvb4un4ouru4fod3605a50q2gu.apps.googleusercontent.com";
 
 const App = (() => {
   let connections = [];      // cached from Google Sheets (or local draft before first sync)
   let activeAuthByConn = {}; // connectionId -> { base, headers, ... } from buildAuth()
   let currentView = "dashboard";
   let pendingBrand = null;   // brand selected inside Add Company modal
+  let currentRole = null;    // "Admin" | "User" — set once whoAmI() succeeds
 
   const els = {};
 
@@ -33,13 +35,59 @@ const App = (() => {
       cfg = { ...(cfg || {}), spreadsheetId: DEFAULT_SPREADSHEET_ID };
       SheetsClient.saveConfig(cfg);
     }
-
+    if (!AuthClient.loadClientId() && DEFAULT_SIGNIN_CLIENT_ID) {
+      AuthClient.saveClientId(DEFAULT_SIGNIN_CLIENT_ID);
+    }
     qs("cfgSpreadsheetId").value = cfg?.spreadsheetId || "";
     qs("cfgProxyUrl").value = ProxyClient.getProxyBaseUrl();
+    qs("cfgSignInClientId").value = AuthClient.loadClientId();
+
+    startAuthGate();
+  }
+
+  /* ---------------------------- sign-in gate ---------------------------- */
+
+  function startAuthGate() {
+    const clientId = AuthClient.loadClientId();
+    if (!clientId) {
+      qs("authGateNotConfigured").hidden = false;
+      return;
+    }
+    qs("authGateNotConfigured").hidden = true;
+    const ok = AuthClient.init(onGoogleSignedIn);
+    if (ok) AuthClient.renderButton(qs("authGateButton"));
+  }
+
+  async function onGoogleSignedIn() {
+    qs("authGateError").hidden = true;
+    qs("authGateButton").innerHTML = `<span class="field-help">Checking access…</span>`;
+    try {
+      const who = await SheetsClient.whoAmI();
+      currentRole = who.role;
+      qs("authGateOverlay").classList.remove("active");
+      qs("authUserLabel").textContent = `${who.email} · ${who.role}`;
+      await afterSignedIn();
+    } catch (e) {
+      AuthClient.signOut();
+      qs("authGateButton").innerHTML = "";
+      AuthClient.init(onGoogleSignedIn);
+      AuthClient.renderButton(qs("authGateButton"));
+      const box = qs("authGateError");
+      box.hidden = false;
+      box.innerHTML = `<strong>Sign-in didn't go through</strong>${escapeHtml(e.message)}`;
+    }
+  }
+
+  async function afterSignedIn() {
     updateConnectionBanner();
     if (SheetsClient.isConfigured()) await refreshConnections();
     renderBrandGrid();
     showView("dashboard");
+  }
+
+  function handleSignOut() {
+    AuthClient.signOut();
+    location.reload(); // simplest reliable way back to a clean, gated state
   }
 
   function cacheEls() {
@@ -49,6 +97,14 @@ const App = (() => {
   function wireStaticEvents() {
     DatePicker.attach(qs("extStart"));
     DatePicker.attach(qs("extEnd"));
+    qs("btnSignOut").addEventListener("click", handleSignOut);
+    qs("authGateClientIdSave").addEventListener("click", () => {
+      const id = qs("authGateClientIdInput").value.trim();
+      if (!id) return;
+      AuthClient.saveClientId(id);
+      qs("cfgSignInClientId").value = id;
+      startAuthGate();
+    });
     document.querySelectorAll(".nav-btn[data-view]").forEach(btn => {
       btn.addEventListener("click", () => showView(btn.dataset.view));
     });
@@ -126,6 +182,9 @@ const App = (() => {
   async function handleSaveSettings() {
     SheetsClient.saveConfig({ spreadsheetId: qs("cfgSpreadsheetId").value.trim() });
     ProxyClient.setProxyBaseUrl(qs("cfgProxyUrl").value.trim());
+    const newClientId = qs("cfgSignInClientId").value.trim();
+    const clientIdChanged = newClientId !== AuthClient.loadClientId();
+    AuthClient.saveClientId(newClientId);
     updateConnectionBanner();
     qs("settingsSavedNote").textContent = "Saved.";
     qs("settingsSavedNote").style.color = "var(--ok)";
@@ -137,6 +196,11 @@ const App = (() => {
         qs("settingsSavedNote").textContent = `Saved, but: ${e.message}`;
         qs("settingsSavedNote").style.color = "var(--err)";
       }
+    }
+    if (clientIdChanged) {
+      qs("settingsSavedNote").textContent = "Sign-in Client ID changed — reloading…";
+      setTimeout(() => location.reload(), 1200);
+      return;
     }
     setTimeout(() => (qs("settingsSavedNote").textContent = ""), 6000);
   }
@@ -185,7 +249,7 @@ const App = (() => {
             ${conn.dailyAutoExtract ? "Daily auto: ON" : "Daily auto: OFF"}
           </button>
           <button class="btn btn-ghost" data-action="extract" data-id="${conn.id}">Extract</button>
-          <button class="btn btn-ghost" data-action="delete" data-id="${conn.id}">Remove</button>
+          ${currentRole === "Admin" ? `<button class="btn btn-ghost" data-action="delete" data-id="${conn.id}">Remove</button>` : ""}
         </div>`;
       root.appendChild(row);
     }
@@ -312,8 +376,12 @@ const App = (() => {
 
   async function handleDeleteConnection(id) {
     if (!confirm("Remove this company connection? This does not delete anything on the vendor side.")) return;
-    await SheetsClient.deleteConnection(id);
-    await refreshConnections();
+    try {
+      await SheetsClient.deleteConnection(id);
+      await refreshConnections();
+    } catch (e) {
+      alert(`Could not remove: ${e.message}`);
+    }
   }
 
   /* ---------------------------- add company modal ---------------------------- */
