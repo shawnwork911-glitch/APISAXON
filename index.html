@@ -92,6 +92,22 @@ body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;backgroun
 .field{margin-bottom:12px;}
 .field label{display:block;font-size:.74rem;color:var(--muted);letter-spacing:.03em;margin-bottom:5px;}
 .field input, .field select, .date-input{width:100%;background:#0f141c;border:1px solid var(--line);color:var(--ink);padding:9px 10px;border-radius:8px;font-size:.88rem;}
+
+/* Custom date picker */
+.date-field-wrap{position:relative;display:flex;}
+.date-field-wrap .date-input{cursor:pointer;padding-right:34px;}
+.date-picker-btn{position:absolute;right:4px;top:50%;transform:translateY(-50%);background:transparent;border:none;color:var(--muted);cursor:pointer;font-size:.95rem;padding:4px 6px;}
+.date-picker-popup{position:absolute;top:calc(100% + 6px);left:0;z-index:60;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;width:240px;box-shadow:0 10px 30px rgba(0,0,0,.4);}
+.date-picker-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:.86rem;font-weight:600;}
+.date-picker-nav{background:transparent;border:none;color:var(--ink);cursor:pointer;font-size:.9rem;padding:2px 8px;border-radius:6px;}
+.date-picker-nav:hover{background:var(--panel2);}
+.date-picker-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center;}
+.date-picker-grid .dow{font-size:.68rem;color:var(--muted);padding:4px 0;}
+.date-picker-grid .day{font-size:.78rem;padding:6px 0;border-radius:6px;cursor:pointer;color:var(--ink);}
+.date-picker-grid .day:hover{background:var(--panel2);}
+.date-picker-grid .day.muted{color:var(--muted);opacity:.45;}
+.date-picker-grid .day.today{border:1px solid var(--accent);}
+.date-picker-grid .day.selected{background:var(--accent);color:var(--accent-ink);font-weight:700;}
 .field-help{font-size:.72rem;color:var(--muted);margin-top:4px;}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
 
@@ -194,13 +210,19 @@ tbody tr:last-child td{border-bottom:none;}
           </div>
           <div class="field">
             <label>Start date</label>
-            <input type="date" id="extStart" class="date-input">
+            <div class="date-field-wrap">
+              <input type="text" id="extStart" class="date-input" placeholder="dd/mm/yyyy" readonly autocomplete="off">
+              <button type="button" class="date-picker-btn" data-target="extStart" aria-label="Open calendar">📅</button>
+            </div>
           </div>
         </div>
         <div style="display:flex;gap:14px;align-items:flex-end;margin-top:12px;">
           <div class="field" style="max-width:220px;">
             <label>End date</label>
-            <input type="date" id="extEnd" class="date-input">
+            <div class="date-field-wrap">
+              <input type="text" id="extEnd" class="date-input" placeholder="dd/mm/yyyy" readonly autocomplete="off">
+              <button type="button" class="date-picker-btn" data-target="extEnd" aria-label="Open calendar">📅</button>
+            </div>
           </div>
           <button class="btn btn-primary" id="btnQueueExtraction">Queue extraction</button>
         </div>
@@ -378,6 +400,7 @@ tbody tr:last-child td{border-bottom:none;}
 <script src="js/brands.js"></script>
 <script src="js/signing.js"></script>
 <script src="js/proxy-client.js"></script>
+<script src="js/datepicker.js"></script>
 <script src="js/sheets-client.js"></script>
 <script src="js/templates.js"></script>
 <script src="js/compare.js"></script>
