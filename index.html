@@ -139,6 +139,7 @@ tbody tr:last-child td{border-bottom:none;}
     <div class="nav-group-label">MONITOR</div>
     <button class="nav-btn active" data-view="dashboard">▦ Dashboard</button>
     <button class="nav-btn" data-view="extraction">↗ Extraction</button>
+    <button class="nav-btn" data-view="compare">⇄ Compare</button>
     <div class="nav-group-label">SYSTEM</div>
     <button class="nav-btn" data-view="settings">⚙ Settings</button>
   </div>
@@ -254,6 +255,35 @@ tbody tr:last-child td{border-bottom:none;}
       </div>
     </div>
 
+    <!-- COMPARE -->
+    <div class="view" id="view-compare">
+      <div class="card">
+        <div class="card-head"><h3>Hourly vs Monthly</h3></div>
+        <div class="callout">
+          Sums Hourly-resolution readings into monthly totals per facility_id (grouped exactly like the Extraction tab's export settings) and compares them against Monthly-resolution readings already in your Google Sheet's <code>Readings</code> tab, flagging any month where they disagree by 0.005 kWh or more. Needs both Hourly and Monthly data already extracted for the same company.
+        </div>
+        <div class="field" style="max-width:340px;">
+          <label>Company</label>
+          <select id="cmpCompany"><option value="">Select a company…</option></select>
+        </div>
+        <div style="margin-top:12px;">
+          <button class="btn btn-primary" id="btnRunCompare">Run comparison</button>
+          <span id="cmpStatus" style="font-size:.82rem;color:var(--muted);margin-left:10px;"></span>
+        </div>
+      </div>
+
+      <div class="card" id="cmpResultsCard" hidden>
+        <div class="card-head">
+          <h3>Results</h3>
+          <button class="btn btn-ghost" id="btnDownloadCompare">Download Excel</button>
+        </div>
+        <div id="cmpSummary" style="font-size:.86rem;color:var(--muted);margin-bottom:12px;"></div>
+        <div class="table-scroll" style="max-height:400px;">
+          <table id="cmpResultsTable"></table>
+        </div>
+      </div>
+    </div>
+
     <!-- SETTINGS -->
     <div class="view" id="view-settings">
       <div class="card">
@@ -350,6 +380,7 @@ tbody tr:last-child td{border-bottom:none;}
 <script src="js/proxy-client.js"></script>
 <script src="js/sheets-client.js"></script>
 <script src="js/templates.js"></script>
+<script src="js/compare.js"></script>
 <script src="js/extraction.js"></script>
 <script src="js/app.js"></script>
 </body>
