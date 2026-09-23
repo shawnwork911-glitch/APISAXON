@@ -47,13 +47,25 @@ const App = (() => {
 
   /* ---------------------------- sign-in gate ---------------------------- */
 
-  function startAuthGate() {
+  function startAuthGate(retriesLeft = 20) {
     const clientId = AuthClient.loadClientId();
     if (!clientId) {
       qs("authGateNotConfigured").hidden = false;
       return;
     }
     qs("authGateNotConfigured").hidden = true;
+
+    if (typeof google === "undefined") {
+      // The Google Sign-In script (accounts.google.com/gsi/client) hasn't
+      // finished loading yet — wait briefly and retry rather than silently
+      // showing an empty box. If it never loads (ad blocker, network
+      // block), say so plainly instead of leaving the gate blank forever.
+      if (retriesLeft > 0) { setTimeout(() => startAuthGate(retriesLeft - 1), 150); return; }
+      const box = qs("authGateError");
+      box.hidden = false;
+      box.innerHTML = `<strong>Google Sign-In didn't load</strong>Check your internet connection or whether an ad/script blocker is blocking accounts.google.com, then reload the page.`;
+      return;
+    }
     const ok = AuthClient.init(onGoogleSignedIn);
     if (ok) AuthClient.renderButton(qs("authGateButton"));
   }
