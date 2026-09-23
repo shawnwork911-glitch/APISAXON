@@ -53,7 +53,22 @@ const App = (() => {
     qs("btnAddCompany").addEventListener("click", openAddCompanyModal);
     qs("btnModalClose").addEventListener("click", closeAddCompanyModal);
     qs("btnStationsModalClose").addEventListener("click", closeStationsModal);
+    qs("btnStationsModalDone").addEventListener("click", closeStationsModal);
     qs("stationsModalOverlay").addEventListener("click", (e) => { if (e.target.id === "stationsModalOverlay") closeStationsModal(); });
+    qs("stationsModalTable").addEventListener("input", (e) => {
+      if (!e.target.classList.contains("modalStationFacilityInput")) return;
+      stationsModalState.stationFacility[e.target.dataset.station] = e.target.value;
+      renderStationsModalFacilityTable();
+    });
+    qs("stationsModalTable").addEventListener("change", saveStationsModalSettings);
+    qs("stationsModalFacilityTable").addEventListener("change", (e) => {
+      const fid = e.target.dataset.facility;
+      if (!fid) return;
+      stationsModalState.facilityGroups[fid] = stationsModalState.facilityGroups[fid] || {};
+      if (e.target.classList.contains("modalFacilityMeterInput")) stationsModalState.facilityGroups[fid].meterId = e.target.value;
+      if (e.target.classList.contains("modalFacilityRegistrySelect")) stationsModalState.facilityGroups[fid].eacRegistryId = e.target.value;
+      saveStationsModalSettings();
+    });
     qs("btnModalCancel").addEventListener("click", closeAddCompanyModal);
     qs("btnSaveWithoutTest").addEventListener("click", () => saveConnectionFromModal(false));
     qs("btnTestConnect").addEventListener("click", () => saveConnectionFromModal(true));
@@ -164,27 +179,85 @@ const App = (() => {
     root.querySelectorAll("[data-action='delete']").forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); handleDeleteConnection(b.dataset.id); }));
   }
 
+  // stationsModalState holds a working copy of the CURRENTLY OPEN company's
+  // templateSettings while the modal is open — separate from templateFormState
+  // (the Extraction tab's own working copy) so opening this modal doesn't
+  // clobber whatever's being edited there for a possibly-different company.
+  let stationsModalState = null;
+  let stationsModalConnId = null;
+
   function openStationsModal(connId) {
     const conn = connections.find(c => c.id === connId);
     if (!conn) return;
+    stationsModalConnId = connId;
     const brand = BRANDS[conn.brand];
     qs("stationsModalTitle").innerHTML = `<span class="badge" style="background:${brand.color};display:inline-flex;width:26px;height:26px;font-size:.62rem;vertical-align:middle;margin-right:8px;">${brand.badge}</span>${escapeHtml(conn.companyName)}`;
-    const list = qs("stationsModalList");
-    const stations = conn.stations || [];
-    if (!stations.length) {
-      list.innerHTML = `<div class="field-help">No stations cached yet — re-run "Test & Connect" on this company to fetch the station list.</div>`;
-    } else {
-      list.innerHTML = stations.map(s => `
-        <div class="station-list-item">
-          <div class="station-list-icon">⌂</div>
-          <div>
-            <div class="station-list-name">${escapeHtml(s.name)}</div>
-            <div class="station-list-code">Station code: ${escapeHtml(s.id)}</div>
-          </div>
-        </div>`).join("");
-    }
+
+    stationsModalState = conn.templateSettings ? JSON.parse(JSON.stringify(conn.templateSettings)) : TemplateExport.defaultSettings("1");
+    stationsModalState.stationFacility = stationsModalState.stationFacility || {};
+    stationsModalState.facilityGroups = stationsModalState.facilityGroups || {};
+
+    renderStationsModalTable(conn);
+    renderStationsModalFacilityTable();
+    qs("stationsModalSavedNote").textContent = "";
     qs("stationsModalOverlay").classList.add("active");
   }
+
+  function renderStationsModalTable(conn) {
+    const wrap = qs("stationsModalTable");
+    const stations = conn.stations || [];
+    if (!stations.length) {
+      wrap.innerHTML = `<tbody><tr><td class="field-help">No stations cached yet — re-run "Test & Connect" on this company to fetch the station list.</td></tr></tbody>`;
+      return;
+    }
+    wrap.innerHTML = `<thead><tr><th>Station</th><th>facility_id</th></tr></thead><tbody>` +
+      stations.map(s => `
+        <tr>
+          <td>${escapeHtml(s.name)}<div class="station-list-code">${escapeHtml(s.id)}</div></td>
+          <td><input type="text" class="modalStationFacilityInput" data-station="${escapeHtml(s.id)}"
+                     value="${escapeHtml(stationsModalState.stationFacility[s.id] || "")}"
+                     placeholder="${escapeHtml(s.id)}"></td>
+        </tr>`).join("") + `</tbody>`;
+  }
+
+  function renderStationsModalFacilityTable() {
+    const wrap = qs("stationsModalFacilityTable");
+    const distinct = [...new Set(Object.values(stationsModalState.stationFacility).filter(v => v && v.trim()))];
+    if (!distinct.length) {
+      wrap.innerHTML = `<tbody><tr><td class="field-help">No facility_id assigned yet — enter one above to see its group settings here.</td></tr></tbody>`;
+      return;
+    }
+    wrap.innerHTML = `<thead><tr><th>facility_id</th><th>meter_id</th><th>eac_registry_id</th></tr></thead><tbody>` +
+      distinct.map(fid => {
+        const g = stationsModalState.facilityGroups[fid] || {};
+        return `<tr>
+          <td>${escapeHtml(fid)}</td>
+          <td><input type="text" class="modalFacilityMeterInput" data-facility="${escapeHtml(fid)}" value="${escapeHtml(g.meterId || "")}" placeholder="${escapeHtml(fid)}"></td>
+          <td><select class="modalFacilityRegistrySelect" data-facility="${escapeHtml(fid)}">
+                <option value="tigr" ${g.eacRegistryId !== "irec" ? "selected" : ""}>TIGR</option>
+                <option value="irec" ${g.eacRegistryId === "irec" ? "selected" : ""}>I-REC</option>
+              </select></td>
+        </tr>`;
+      }).join("") + `</tbody>`;
+  }
+
+  async function saveStationsModalSettings() {
+    const conn = connections.find(c => c.id === stationsModalConnId);
+    if (!conn || !stationsModalState) return;
+    conn.templateSettings = stationsModalState;
+    qs("stationsModalSavedNote").textContent = "Saving…";
+    try {
+      await SheetsClient.saveConnection(conn);
+      qs("stationsModalSavedNote").textContent = "Saved.";
+      // Keep the Extraction tab's own working copy in sync if it's currently
+      // showing this same company, so switching tabs doesn't show stale data.
+      if (qs("extCompany").value === conn.id) loadTemplateSettingsIntoForm(conn);
+    } catch (e) {
+      qs("stationsModalSavedNote").textContent = `Could not save: ${e.message}`;
+      qs("stationsModalSavedNote").style.color = "var(--err)";
+    }
+  }
+
   function closeStationsModal() { qs("stationsModalOverlay").classList.remove("active"); }
 
   async function handleToggleAutoExtract(id) {
