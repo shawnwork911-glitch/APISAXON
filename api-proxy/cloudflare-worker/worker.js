@@ -112,6 +112,7 @@ async function handleSheets(request, env) {
       case "saveConnection": return json(200, await saveConnection(env, token, payload.connection));
       case "deleteConnection": return json(200, await deleteConnection(env, token, payload.id));
       case "appendReadings": return json(200, await appendReadings(env, token, payload.rows));
+      case "listReadings": return json(200, await listReadings(env, token, payload.company));
       default: return json(400, { error: `Unknown action '${action}'.` });
     }
   } catch (err) {
@@ -183,6 +184,17 @@ async function appendReadings(env, token, rows) {
     });
   }
   return { appended: values.length };
+}
+
+// Reads back rows already synced to the Readings tab — used by the Compare
+// view (hourly-vs-monthly). Filters by company server-side so the browser
+// only receives what it needs, since Readings can grow large over time.
+async function listReadings(env, token, companyName) {
+  const data = await sheetsFetch(env, token, `/values/${READINGS_SHEET}!A2:H200000`);
+  const rows = data.values || [];
+  return rows
+    .filter(r => !companyName || r[1] === companyName)
+    .map(r => ({ timestamp: r[0], company: r[1], brand: r[2], stationId: r[3], stationName: r[4], resolution: r[5], kwh: Number(r[6]), runAt: r[7] }));
 }
 
 function safeJson(s, fallback) { try { return JSON.parse(s); } catch { return fallback; } }
