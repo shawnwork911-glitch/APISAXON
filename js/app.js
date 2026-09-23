@@ -59,6 +59,8 @@ const App = (() => {
       if (!e.target.classList.contains("modalStationFacilityInput")) return;
       stationsModalState.stationFacility[e.target.dataset.station] = e.target.value;
       renderStationsModalFacilityTable();
+      const conn = connections.find(c => c.id === stationsModalConnId);
+      if (conn) renderMissingFacilityWarning(conn);
     });
     qs("stationsModalTable").addEventListener("change", saveStationsModalSettings);
     qs("stationsModalFacilityTable").addEventListener("change", (e) => {
@@ -199,8 +201,18 @@ const App = (() => {
 
     renderStationsModalTable(conn);
     renderStationsModalFacilityTable();
+    renderMissingFacilityWarning(conn);
     qs("stationsModalSavedNote").textContent = "";
     qs("stationsModalOverlay").classList.add("active");
+  }
+
+  function renderMissingFacilityWarning(conn) {
+    const box = qs("stationsModalMissingWarning");
+    const missing = (conn.stations || []).filter(s => !(stationsModalState.stationFacility[s.id] || "").trim());
+    if (!missing.length) { box.hidden = true; box.textContent = ""; return; }
+    box.hidden = false;
+    box.innerHTML = `<strong>${missing.length} station(s) have no facility_id set</strong>`
+      + `Each will export as its own separate facility until assigned: ${missing.map(s => escapeHtml(s.name)).join(", ")}.`;
   }
 
   function renderStationsModalTable(conn) {
