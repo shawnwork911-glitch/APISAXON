@@ -148,6 +148,11 @@ const App = (() => {
 
   /* ---------------------------- dashboard ---------------------------- */
 
+  function missingFacilityStations(conn) {
+    const map = (conn.templateSettings?.stationFacility) || {};
+    return (conn.stations || []).filter(s => !(map[s.id] || "").trim());
+  }
+
   function renderDashboard() {
     const root = qs("companyList");
     root.innerHTML = "";
@@ -157,6 +162,10 @@ const App = (() => {
     }
     for (const conn of connections) {
       const brand = BRANDS[conn.brand];
+      const missing = missingFacilityStations(conn);
+      const missingBadge = missing.length
+        ? `<span class="pill warn" title="${escapeHtml(missing.map(s => s.name).join(", "))}">⚠ ${missing.length} missing facility_id</span>`
+        : "";
       const row = document.createElement("div");
       row.className = "company-row";
       row.innerHTML = `
@@ -165,7 +174,7 @@ const App = (() => {
           <div class="company-name">${escapeHtml(conn.companyName)}</div>
           <div class="company-sub">${brand.label} · ${(conn.stations || []).length} station(s)${conn.dailyAutoExtract ? " · Daily auto-extract on" : ""}</div>
         </div>
-        <div class="company-status">${brand.confidence === "verified" ? "<span class=\"pill ok\">Ready</span>" : "<span class=\"pill warn\">Untested endpoints</span>"}</div>
+        <div class="company-status">${brand.confidence === "verified" ? "<span class=\"pill ok\">Ready</span>" : "<span class=\"pill warn\">Untested endpoints</span>"}${missingBadge}</div>
         <div class="company-actions">
           <button class="btn ${conn.dailyAutoExtract ? "btn-primary" : "btn-ghost"}" data-action="toggle-auto" data-id="${conn.id}">
             ${conn.dailyAutoExtract ? "Daily auto: ON" : "Daily auto: OFF"}
@@ -278,7 +287,10 @@ const App = (() => {
     }
   }
 
-  function closeStationsModal() { qs("stationsModalOverlay").classList.remove("active"); }
+  function closeStationsModal() {
+    qs("stationsModalOverlay").classList.remove("active");
+    if (currentView === "dashboard") renderDashboard(); // refresh the missing-facility_id badge without a full reload
+  }
 
   async function handleToggleAutoExtract(id) {
     const conn = connections.find(c => c.id === id);
