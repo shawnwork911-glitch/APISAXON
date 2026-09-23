@@ -99,6 +99,16 @@ body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;backgroun
 .extraction-grid .field{margin-bottom:0;}
 .station-box{max-height:150px;overflow-y:auto;background:#0f141c;border:1px solid var(--line);border-radius:8px;padding:8px 10px;}
 .station-row{display:flex;align-items:center;gap:8px;font-size:.85rem;padding:3px 0;}
+
+/* Tables used inside modals (stations/site-identifiers) — this was
+   missing entirely, which is why long station lists overflowed straight
+   through their box instead of scrolling. */
+table{border-collapse:collapse;width:100%;font-size:.82rem;}
+thead th{text-align:left;padding:7px 10px;background:var(--panel2);color:var(--muted);font-weight:600;white-space:nowrap;border-bottom:1px solid var(--line);position:sticky;top:0;}
+tbody td{padding:6px 10px;border-bottom:1px solid var(--line);vertical-align:top;}
+tbody tr:last-child td{border-bottom:none;}
+.table-scroll{overflow-x:auto;overflow-y:auto;border:1px solid var(--line);border-radius:8px;}
+.table-scroll input, .table-scroll select{width:100%;background:#0f141c;border:1px solid var(--line);color:var(--ink);padding:6px 8px;border-radius:6px;font-size:.82rem;}
 .job-row{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px;background:var(--panel2);}
 .job-row .btn{margin-top:8px;margin-right:6px;}
 .job-title{font-size:.86rem;margin-bottom:8px;}
@@ -108,7 +118,8 @@ body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;backgroun
 
 /* Settings */
 .settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
-@media (max-width:820px){.settings-grid, .extraction-grid, .brand-grid{grid-template-columns:1fr;}}
+@media (max-width:820px){.settings-grid, .extraction-grid, .brand-grid, .stations-modal-grid{grid-template-columns:1fr;}}
+.stations-modal-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start;}
 
 .banner{display:flex;gap:10px;align-items:center;background:#241c14;border:1px solid #3a2c16;border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:.85rem;color:#e5c98a;}
 .banner.banner-error{background:#2a1414;border-color:#4a1e1e;color:#f0a5a5;}
@@ -218,18 +229,20 @@ body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;backgroun
           <label>unit_of_measurement</label>
           <select id="tmplUnitOM"><option value="MWh">MWh</option><option value="kWh">kWh</option></select>
         </div>
-        <div id="tmplStationFacilityWrap" hidden>
-          <label>Station → facility_id</label>
-          <div class="field-help" style="margin-bottom:6px;">Stations sharing the same facility_id have their hourly readings <strong>summed</strong> into one row per hour and land in the same output file. Leave a station blank to keep it as its own separate facility.</div>
-          <div class="table-scroll" style="max-height:220px;">
-            <table id="tmplStationFacilityTable"></table>
+        <div class="stations-modal-grid">
+          <div id="tmplStationFacilityWrap" hidden>
+            <label>Station → facility_id</label>
+            <div class="field-help" style="margin-bottom:6px;">Stations sharing the same facility_id have their hourly readings <strong>summed</strong> into one row per hour and land in the same output file. Leave a station blank to keep it as its own separate facility.</div>
+            <div class="table-scroll" style="max-height:340px;">
+              <table id="tmplStationFacilityTable"></table>
+            </div>
           </div>
-        </div>
-        <div id="tmplFacilityGroupsWrap" hidden>
-          <label>Facility groups (Template 2 details)</label>
-          <div class="field-help" style="margin-bottom:6px;">One row per distinct facility_id entered above — meter_id defaults to the facility_id itself if left blank (matches your existing exports).</div>
-          <div class="table-scroll" style="max-height:220px;">
-            <table id="tmplFacilityGroupsTable"></table>
+          <div id="tmplFacilityGroupsWrap" hidden>
+            <label>Facility groups (Template 2 details)</label>
+            <div class="field-help" style="margin-bottom:6px;">One row per distinct facility_id entered above — meter_id defaults to the facility_id itself if left blank (matches your existing exports).</div>
+            <div class="table-scroll" style="max-height:340px;">
+              <table id="tmplFacilityGroupsTable"></table>
+            </div>
           </div>
         </div>
       </div>
@@ -278,7 +291,7 @@ body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;backgroun
 
 <!-- Stations modal -->
 <div class="modal-overlay" id="stationsModalOverlay">
-  <div class="modal" style="max-width:720px;">
+  <div class="modal" style="max-width:960px;">
     <div class="modal-top">
       <h3 id="stationsModalTitle">Stations</h3>
       <button class="modal-close" id="btnStationsModalClose">✕</button>
@@ -287,13 +300,18 @@ body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;backgroun
     <div class="field-help" style="margin-bottom:8px;">
       facility_id ties stations together for Template 1/2 exports — stations sharing one are summed per hour into a single output. meter_id / eac_registry_id are used only for Template 2 and can be left blank to default to the facility_id.
     </div>
-    <div class="table-scroll" style="max-height:280px;">
-      <table id="stationsModalTable"></table>
-    </div>
-    <div id="stationsModalFacilityWrap" style="margin-top:16px;">
-      <label style="display:block;font-size:.74rem;color:var(--muted);letter-spacing:.03em;margin-bottom:6px;">FACILITY DETAILS (Template 2)</label>
-      <div class="table-scroll" style="max-height:220px;">
-        <table id="stationsModalFacilityTable"></table>
+    <div class="stations-modal-grid">
+      <div>
+        <label style="display:block;font-size:.74rem;color:var(--muted);letter-spacing:.03em;margin-bottom:6px;">STATIONS</label>
+        <div class="table-scroll" style="max-height:400px;">
+          <table id="stationsModalTable"></table>
+        </div>
+      </div>
+      <div id="stationsModalFacilityWrap">
+        <label style="display:block;font-size:.74rem;color:var(--muted);letter-spacing:.03em;margin-bottom:6px;">FACILITY DETAILS (Template 2)</label>
+        <div class="table-scroll" style="max-height:400px;">
+          <table id="stationsModalFacilityTable"></table>
+        </div>
       </div>
     </div>
     <div class="modal-actions">
