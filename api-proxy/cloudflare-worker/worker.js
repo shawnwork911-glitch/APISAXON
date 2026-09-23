@@ -21,8 +21,6 @@
 
 const ALLOWED_HOSTS = new Set([
   "intl.fusionsolar.huawei.com",
-  "uni005eu5.fusionsolar.huawei.com",
-  "eu5.fusionsolar.huawei.com",
   "monitoringapi.solaredge.com",
   "gateway.isolarcloud.com",
   "www.soliscloud.com",
@@ -31,6 +29,16 @@ const ALLOWED_HOSTS = new Set([
   "async-auth.smaapis.de",
   "sandbox.smaapis.de",
 ]);
+// FusionSolar issues a different regional API gateway per account (sg5, au5,
+// eu5, la5, etc. — e.g. "sg5.fusionsolar.huawei.com"), so rather than list
+// every region by hand, any subdomain of fusionsolar.huawei.com is allowed.
+// (Not "uni..." domains — those are Huawei's human login portal, a
+// different thing from the Northbound API gateway.)
+const ALLOWED_SUFFIXES = [".fusionsolar.huawei.com"];
+
+function isAllowedHost(hostname) {
+  return ALLOWED_HOSTS.has(hostname) || ALLOWED_SUFFIXES.some(suf => hostname.endsWith(suf));
+}
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -60,8 +68,8 @@ async function handleRelay(request) {
 
   let target;
   try { target = new URL(url); } catch { return json(400, { error: "Invalid URL." }); }
-  if (!ALLOWED_HOSTS.has(target.hostname)) {
-    return json(403, { error: `Host '${target.hostname}' is not on the allow-list. Add it to ALLOWED_HOSTS in worker.js.` });
+  if (!isAllowedHost(target.hostname)) {
+    return json(403, { error: `Host '${target.hostname}' is not on the allow-list. Add it to ALLOWED_HOSTS/ALLOWED_SUFFIXES in worker.js.` });
   }
 
   const fetchHeaders = new Headers(headers || {});
@@ -86,7 +94,7 @@ async function handleRelay(request) {
 
 const CONNECTIONS_SHEET = "Connections";
 const READINGS_SHEET = "Readings";
-// Connections columns: RowId, Title, Brand, Region, CredentialsJson, StationsJson, DailyAutoExtract, CursorJson
+// Connections columns: RowId, Title, Brand, Region, CredentialsJson, StationsJson, DailyAutoExtract, CursorJson, TemplateSettingsJson
 // Readings columns:    Timestamp, Company, Brand, StationId, StationName, Resolution, kWh, RunAt
 
 async function handleSheets(request, env) {
@@ -121,29 +129,31 @@ async function sheetsFetch(env, token, path, opts = {}) {
 }
 
 async function listConnections(env, token) {
-  const data = await sheetsFetch(env, token, `/values/${CONNECTIONS_SHEET}!A2:H1000`);
+  const data = await sheetsFetch(env, token, `/values/${CONNECTIONS_SHEET}!A2:I1000`);
   const rows = data.values || [];
   return rows
     .map((r, i) => ({ rowIndex: i + 2, id: r[0], companyName: r[1], brand: r[2], region: r[3],
-      credentials: safeJson(r[4], {}), stations: safeJson(r[5], []), dailyAutoExtract: r[6] === "TRUE" || r[6] === true, cursor: safeJson(r[7], {}) }))
+      credentials: safeJson(r[4], {}), stations: safeJson(r[5], []), dailyAutoExtract: r[6] === "TRUE" || r[6] === true, cursor: safeJson(r[7], {}),
+      templateSettings: safeJson(r[8], null) }))
     .filter(c => c.id && c.companyName); // blank Title = soft-deleted row
 }
 
 async function saveConnection(env, token, conn) {
   const id = conn.id || crypto.randomUUID();
   const values = [[id, conn.companyName, conn.brand, conn.region || "", JSON.stringify(conn.credentials || {}),
-    JSON.stringify(conn.stations || []), conn.dailyAutoExtract ? "TRUE" : "FALSE", JSON.stringify(conn.cursor || {})]];
+    JSON.stringify(conn.stations || []), conn.dailyAutoExtract ? "TRUE" : "FALSE", JSON.stringify(conn.cursor || {}),
+    JSON.stringify(conn.templateSettings || null)]];
 
   if (conn.id) {
     const rowIndex = await findRowIndex(env, token, CONNECTIONS_SHEET, conn.id);
     if (rowIndex) {
-      await sheetsFetch(env, token, `/values/${CONNECTIONS_SHEET}!A${rowIndex}:H${rowIndex}?valueInputOption=RAW`, {
+      await sheetsFetch(env, token, `/values/${CONNECTIONS_SHEET}!A${rowIndex}:I${rowIndex}?valueInputOption=RAW`, {
         method: "PUT", body: JSON.stringify({ values }),
       });
       return { id };
     }
   }
-  await sheetsFetch(env, token, `/values/${CONNECTIONS_SHEET}!A:H:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, {
+  await sheetsFetch(env, token, `/values/${CONNECTIONS_SHEET}!A:I:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, {
     method: "POST", body: JSON.stringify({ values }),
   });
   return { id };
@@ -153,7 +163,7 @@ async function deleteConnection(env, token, id) {
   const rowIndex = await findRowIndex(env, token, CONNECTIONS_SHEET, id);
   if (!rowIndex) return { deleted: false };
   // Clear rather than physically delete the row, so other rows' indices never shift underneath us.
-  await sheetsFetch(env, token, `/values/${CONNECTIONS_SHEET}!A${rowIndex}:H${rowIndex}:clear`, { method: "POST", body: "{}" });
+  await sheetsFetch(env, token, `/values/${CONNECTIONS_SHEET}!A${rowIndex}:I${rowIndex}:clear`, { method: "POST", body: "{}" });
   return { deleted: true };
 }
 
