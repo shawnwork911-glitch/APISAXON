@@ -42,7 +42,31 @@
 
 import crypto from "node:crypto";
 
-const { GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_KEY, GOOGLE_SPREADSHEET_ID } = process.env;
+const { GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_KEY, GOOGLE_SPREADSHEET_ID, RELAY_BASE_URL, RELAY_SECRET } = process.env;
+// RELAY_BASE_URL / RELAY_SECRET are optional — only needed for brands whose
+// APIs are geo-restricted to Asia-Pacific network paths (confirmed so far:
+// FusionSolar, which rejects GitHub Actions' US-based runners outright).
+// When unset, FusionSolar calls just go direct — fine for brands without
+// this restriction, but will fail with ENOTFOUND for FusionSolar specifically.
+// See relay-vm/ and docs/SETUP.md for what this points at.
+async function relayableFetch(url, opts = {}) {
+  if (!RELAY_BASE_URL || !RELAY_SECRET) return fetch(url, opts);
+  const resp = await fetch(`${RELAY_BASE_URL}/relay`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${RELAY_SECRET}` },
+    body: JSON.stringify({ url, method: opts.method || "GET", headers: opts.headers || {}, body: opts.body }),
+  });
+  if (!resp.ok) throw new Error(`Relay error ${resp.status}: ${(await resp.text()).slice(0, 300)}`);
+  const relayData = await resp.json();
+  return {
+    status: relayData.status,
+    ok: relayData.status >= 200 && relayData.status < 300,
+    headers: { get: (name) => relayData.headers?.[name.toLowerCase()] ?? relayData.headers?.[name] ?? null },
+    json: async () => { try { return JSON.parse(relayData.body); } catch { return {}; } },
+    text: async () => relayData.body,
+  };
+}
+
 
 for (const v of ["GOOGLE_SERVICE_ACCOUNT_EMAIL", "GOOGLE_SERVICE_ACCOUNT_KEY", "GOOGLE_SPREADSHEET_ID"]) {
   if (!process.env[v]) { console.error(`Missing required env var ${v}`); process.exit(1); }
@@ -161,7 +185,7 @@ async function fusionSolarAuth(conn) {
   const base = c.baseUrl || regionMap[c.region] || regionMap.intl;
   let loginResp;
   try {
-    loginResp = await fetch(`${base}/login`, {
+    loginResp = await relayableFetch(`${base}/login`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ userName: c.username, systemCode: c.systemCode }),
     });
@@ -185,13 +209,14 @@ async function extractFusionSolarHourly(conn, startCursor, endCursor, quota) {
   for (const day of days) {
     if (calls >= quota.perDay) break;
     const ms = new Date(`${day}T12:00:00`).getTime();
-    const resp = await fetch(`${base}/getKpiStationHour`, { method: "POST", headers, body: JSON.stringify({ stationCodes, collectTime: ms }) });
+    const resp = await relayableFetch(`${base}/getKpiStationHour`, { method: "POST", headers, body: JSON.stringify({ stationCodes, collectTime: ms }) });
     const data = await resp.json();
     calls++;
     if (data.failCode === 407) break; // daily quota hit on Huawei's side
     for (const row of (data.data || [])) {
+      const utcOffset = conn.templateSettings?.utcOffset ?? 8;
       rows.push({
-        timestamp: row.collectTime, company: conn.companyName, brand: "FusionSolar",
+        timestamp: fmtSpace(wallClockFromRow({ timestamp: row.collectTime }, "fusionsolar", utcOffset)), company: conn.companyName, brand: "FusionSolar",
         stationId: row.stationCode, stationName: nameFor(conn, row.stationCode), resolution: "Hourly",
         kwh: Number(row.dataItemMap?.inverter_power ?? row.dataItemMap?.product_power ?? 0),
       });
@@ -214,15 +239,16 @@ async function extractFusionSolarMonthly(conn, startDate, endDate, quota) {
   for (let y = startYear; y <= endYear; y++) {
     if (calls >= quota.perDay) break;
     const ms = new Date(y, 6, 1, 12, 0, 0).getTime();
-    const resp = await fetch(`${base}/getKpiStationMonth`, { method: "POST", headers, body: JSON.stringify({ stationCodes, collectTime: ms }) });
+    const resp = await relayableFetch(`${base}/getKpiStationMonth`, { method: "POST", headers, body: JSON.stringify({ stationCodes, collectTime: ms }) });
     const data = await resp.json();
     calls++;
     if (data.failCode === 407) break;
     for (const row of (data.data || [])) {
       const rowDate = new Date(row.collectTime).toISOString().slice(0, 7); // YYYY-MM
       if (rowDate < startDate.slice(0, 7) || rowDate > endDate.slice(0, 7)) continue; // outside the requested range
+      const utcOffset = conn.templateSettings?.utcOffset ?? 8;
       rows.push({
-        timestamp: row.collectTime, company: conn.companyName, brand: "FusionSolar",
+        timestamp: fmtSpace(wallClockFromRow({ timestamp: row.collectTime }, "fusionsolar", utcOffset)), company: conn.companyName, brand: "FusionSolar",
         stationId: row.stationCode, stationName: nameFor(conn, row.stationCode), resolution: "Monthly",
         kwh: Number(row.dataItemMap?.inverter_power ?? row.dataItemMap?.product_power ?? 0),
       });
