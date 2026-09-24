@@ -111,12 +111,6 @@ const App = (() => {
     DatePicker.attach(qs("extEnd"));
     DatePicker.attach(qs("expStart"));
     DatePicker.attach(qs("expEnd"));
-    DatePicker.attach(qs("subStart"));
-    DatePicker.attach(qs("subEnd"));
-    qs("btnSubModalClose").addEventListener("click", closeSubscriptionModal);
-    qs("btnSubModalCancel").addEventListener("click", closeSubscriptionModal);
-    qs("btnSubModalSave").addEventListener("click", handleSaveSubscription);
-    qs("subModalOverlay").addEventListener("click", (e) => { if (e.target.id === "subModalOverlay") closeSubscriptionModal(); });
     qs("btnSignOut").addEventListener("click", handleSignOut);
     qs("authGateClientIdSave").addEventListener("click", () => {
       const id = qs("authGateClientIdInput").value.trim();
@@ -245,31 +239,18 @@ const App = (() => {
         <div class="badge" style="background:${brand.color}">${brand.badge}</div>
         <div class="company-main" data-action="view-stations" data-id="${conn.id}">
           <div class="company-name">${escapeHtml(conn.companyName)}</div>
-          <div class="company-sub">${brand.label} · ${(conn.stations || []).length} station(s)${subscriptionSummary(conn)}</div>
+          <div class="company-sub">${brand.label} · ${(conn.stations || []).length} station(s)</div>
         </div>
         <div class="company-status">${brand.confidence === "verified" ? "<span class=\"pill ok\">Ready</span>" : "<span class=\"pill warn\">Untested endpoints</span>"}${missingBadge}</div>
         <div class="company-actions">
-          <button class="btn ${conn.subscription?.hourly || conn.subscription?.monthly ? "btn-primary" : "btn-ghost"}" data-action="subscription" data-id="${conn.id}">
-            Subscription${conn.subscription?.hourly || conn.subscription?.monthly ? " ✓" : ""}
-          </button>
           <button class="btn btn-ghost" data-action="extract" data-id="${conn.id}">Extract</button>
           ${currentRole === "Admin" ? `<button class="btn btn-ghost" data-action="delete" data-id="${conn.id}">Remove</button>` : ""}
         </div>`;
       root.appendChild(row);
     }
     root.querySelectorAll("[data-action='view-stations']").forEach(el => el.addEventListener("click", () => openStationsModal(el.dataset.id)));
-    root.querySelectorAll("[data-action='subscription']").forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); openSubscriptionModal(b.dataset.id); }));
     root.querySelectorAll("[data-action='extract']").forEach(b => b.addEventListener("click", () => { showView("extraction"); qs("extCompany").value = b.dataset.id; handleExtractionCompanyChange(); }));
     root.querySelectorAll("[data-action='delete']").forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); handleDeleteConnection(b.dataset.id); }));
-  }
-
-  function subscriptionSummary(conn) {
-    const s = conn.subscription;
-    if (!s || (!s.hourly && !s.monthly)) return "";
-    const parts = [];
-    if (s.hourly) parts.push("Hourly");
-    if (s.monthly) parts.push("Monthly");
-    return ` · Subscribed (${parts.join(" + ")}, ${s.startDate || "?"} → ${s.endDate || "?"})`;
   }
 
   // stationsModalState holds a working copy of the CURRENTLY OPEN company's
@@ -295,6 +276,45 @@ const App = (() => {
     renderMissingFacilityWarning(conn);
     qs("stationsModalSavedNote").textContent = "";
     qs("stationsModalOverlay").classList.add("active");
+    loadDataStoredSummary(conn);
+  }
+
+  async function loadDataStoredSummary(conn) {
+    const table = qs("stationsModalDataStoredTable");
+    table.innerHTML = `<tbody><tr><td class="field-help">Loading…</td></tr></tbody>`;
+    try {
+      const readings = await SheetsClient.listReadings(conn.companyName);
+      renderDataStoredTable(table, readings);
+    } catch (e) {
+      table.innerHTML = `<tbody><tr><td class="field-help">Could not load: ${escapeHtml(e.message)}</td></tr></tbody>`;
+    }
+  }
+
+  function renderDataStoredTable(table, readings) {
+    if (!readings.length) {
+      table.innerHTML = `<tbody><tr><td class="field-help">Nothing extracted yet for this company.</td></tr></tbody>`;
+      return;
+    }
+    // Grouped by resolution — dates here are approximate (not timezone-corrected
+    // per brand, unlike Template exports) since this is just a coverage overview.
+    const byResolution = {};
+    for (const r of readings) {
+      const bucket = byResolution[r.resolution] || (byResolution[r.resolution] = { count: 0, min: null, max: null });
+      bucket.count++;
+      const n = Number(r.timestamp);
+      const d = !isNaN(n) && n > 1e10 ? new Date(n) : new Date(r.timestamp);
+      if (isNaN(d.getTime())) continue;
+      if (!bucket.min || d < bucket.min) bucket.min = d;
+      if (!bucket.max || d > bucket.max) bucket.max = d;
+    }
+    const fmt = d => d ? d.toISOString().slice(0, 10) : "?";
+    const order = ["Hourly", "Daily", "Monthly"];
+    const resolutions = Object.keys(byResolution).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    table.innerHTML = `<thead><tr><th>Resolution</th><th>Rows</th><th>Earliest</th><th>Latest</th></tr></thead><tbody>` +
+      resolutions.map(res => {
+        const b = byResolution[res];
+        return `<tr><td>${escapeHtml(res)}</td><td>${b.count}</td><td>${fmt(b.min)}</td><td>${fmt(b.max)}</td></tr>`;
+      }).join("") + `</tbody>`;
   }
 
   function renderMissingFacilityWarning(conn) {
@@ -372,54 +392,6 @@ const App = (() => {
   function closeStationsModal() {
     qs("stationsModalOverlay").classList.remove("active");
     if (currentView === "dashboard") renderDashboard(); // refresh the missing-facility_id badge without a full reload
-  }
-
-  let subscriptionModalConnId = null;
-
-  function openSubscriptionModal(id) {
-    const conn = connections.find(c => c.id === id);
-    if (!conn) return;
-    subscriptionModalConnId = id;
-    const s = conn.subscription || {};
-    qs("subModalTitle").textContent = `${conn.companyName} — Subscription`;
-    qs("subHourly").checked = !!s.hourly;
-    qs("subMonthly").checked = !!s.monthly;
-    if (s.startDate) DatePicker.setFromISO(qs("subStart"), s.startDate);
-    else { qs("subStart").value = ""; qs("subStart").dataset.iso = ""; }
-    if (s.endDate) DatePicker.setFromISO(qs("subEnd"), s.endDate);
-    else { qs("subEnd").value = ""; qs("subEnd").dataset.iso = ""; }
-    qs("subModalOverlay").classList.add("active");
-  }
-  function closeSubscriptionModal() { qs("subModalOverlay").classList.remove("active"); }
-
-  async function handleSaveSubscription() {
-    const conn = connections.find(c => c.id === subscriptionModalConnId);
-    if (!conn) return;
-    const hourly = qs("subHourly").checked;
-    const monthly = qs("subMonthly").checked;
-    const startDate = DatePicker.getISO(qs("subStart"));
-    const endDate = DatePicker.getISO(qs("subEnd"));
-    if ((hourly || monthly) && (!startDate || !endDate)) {
-      alert("Pick a start and end date for the subscription.");
-      return;
-    }
-    if (endDate && startDate && endDate < startDate) {
-      alert("End date is before the start date.");
-      return;
-    }
-    const prevSubscription = conn.subscription;
-    const prevDaily = conn.dailyAutoExtract;
-    conn.subscription = { hourly, monthly, startDate, endDate };
-    conn.dailyAutoExtract = hourly || monthly; // kept for the "on/off" style display + backward compatibility
-    try {
-      await SheetsClient.saveConnection(conn);
-      closeSubscriptionModal();
-      renderDashboard();
-    } catch (e) {
-      conn.subscription = prevSubscription;
-      conn.dailyAutoExtract = prevDaily;
-      alert(`Could not save: ${e.message}`);
-    }
   }
 
   async function handleDeleteConnection(id) {
