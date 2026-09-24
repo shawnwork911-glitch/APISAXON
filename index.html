@@ -288,14 +288,21 @@ tbody tr:last-child td{border-bottom:none;}
     <!-- EXPORT -->
     <div class="view" id="view-export">
       <div class="card">
-        <div class="card-head"><h3>Export Template 1 / 2</h3></div>
+        <div class="card-head"><h3>Export</h3></div>
         <div class="callout">
-          Reads whatever's already in the <code>Readings</code> tab for a company's <strong>Hourly</strong> data — however it got there, a manual Extraction run, a multi-day quota-limited backfill, or months of nightly Daily-auto runs — and converts it to Template 1/2 for any date range you pick. Uses the same facility_id / meter_id / eac_registry_id settings already configured for this company — click it from the Dashboard to edit.
+          Reads whatever's already in the <code>Readings</code> tab — however it got there, a manual Extraction run, a multi-day quota-limited backfill, or nightly Daily-auto runs — and converts it for any date range you pick. Uses the same facility_id / meter_id / eac_registry_id settings already configured for this company — click it from the Dashboard to edit.
         </div>
-        <div class="extraction-grid" style="grid-template-columns:1.4fr 1fr 1fr;">
+        <div class="extraction-grid" style="grid-template-columns:1.2fr 1fr .8fr .8fr;">
           <div class="field">
             <label>Company</label>
             <select id="expCompany"><option value="">Select a company…</option></select>
+          </div>
+          <div class="field">
+            <label>Resolution</label>
+            <select id="expResolution">
+              <option value="Hourly">Hourly</option>
+              <option value="Monthly">Monthly</option>
+            </select>
           </div>
           <div class="field">
             <label>Start date</label>
@@ -312,6 +319,14 @@ tbody tr:last-child td{border-bottom:none;}
             </div>
           </div>
         </div>
+        <div id="expTemplateWrap" class="field" style="max-width:340px;margin-top:8px;">
+          <label>Template (Hourly only)</label>
+          <select id="expTemplate">
+            <option value="1">Template 1 — Hourly Format</option>
+            <option value="2">Template 2 — STX format</option>
+          </select>
+        </div>
+        <div id="expMonthlyNote" hidden class="field-help" style="margin-top:8px;">Monthly uses one fixed format — no template choice needed: <code>GEN ID, stationName, collectTime, PVYield</code>, one row per station per month.</div>
         <div style="margin-top:12px;">
           <button class="btn btn-primary" id="btnRunExport">Build export</button>
           <span id="expStatus" style="font-size:.82rem;color:var(--muted);margin-left:10px;"></span>
