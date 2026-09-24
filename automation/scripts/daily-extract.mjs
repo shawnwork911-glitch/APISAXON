@@ -93,7 +93,8 @@ async function main() {
       }
       await saveCursor(token, conn);
     } catch (err) {
-      console.error(`  [!] ${conn.companyName}: ${err.message}`);
+      const detail = err.cause ? ` (cause: ${err.cause.code || err.cause.message || err.cause})` : "";
+      console.error(`  [!] ${conn.companyName}: ${err.message}${detail}`);
     }
   }
 }
@@ -158,10 +159,15 @@ async function fusionSolarAuth(conn) {
     eu5: "https://eu5.fusionsolar.huawei.com/thirdData",
   };
   const base = c.baseUrl || regionMap[c.region] || regionMap.intl;
-  const loginResp = await fetch(`${base}/login`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ userName: c.username, systemCode: c.systemCode }),
-  });
+  let loginResp;
+  try {
+    loginResp = await fetch(`${base}/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userName: c.username, systemCode: c.systemCode }),
+    });
+  } catch (err) {
+    throw new Error(`Could not reach ${base}/login: ${err.message}`, { cause: err.cause });
+  }
   const loginData = await loginResp.json();
   if (!loginData.success) throw new Error(loginData.message || "FusionSolar login failed");
   const token = loginData?.data?.xsrfToken || loginData?.xsrfToken || loginResp.headers.get("xsrf-token");
