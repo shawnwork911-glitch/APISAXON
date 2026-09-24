@@ -127,6 +127,8 @@ tbody tr:last-child td{border-bottom:none;}
 .table-scroll{overflow-x:auto;overflow-y:auto;border:1px solid var(--line);border-radius:8px;}
 .table-scroll input, .table-scroll select{width:100%;background:#0f141c;border:1px solid var(--line);color:var(--ink);padding:6px 8px;border-radius:6px;font-size:.82rem;}
 .job-row{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px;background:var(--panel2);}
+.export-facility-row{display:flex;align-items:center;justify-content:space-between;border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px;background:var(--panel2);}
+.export-facility-row .meta{font-size:.78rem;color:var(--muted);}
 .job-row .btn{margin-top:8px;margin-right:6px;}
 .job-title{font-size:.86rem;margin-bottom:8px;}
 .job-bar{height:6px;background:#0f141c;border-radius:99px;overflow:hidden;margin-bottom:8px;}
@@ -173,6 +175,7 @@ tbody tr:last-child td{border-bottom:none;}
     <button class="nav-btn active" data-view="dashboard">▦ Dashboard</button>
     <button class="nav-btn" data-view="extraction">↗ Extraction</button>
     <button class="nav-btn" data-view="compare">⇄ Compare</button>
+    <button class="nav-btn" data-view="export">⤓ Export</button>
     <div class="nav-group-label">SYSTEM</div>
     <button class="nav-btn" data-view="settings">⚙ Settings</button>
   </div>
@@ -325,6 +328,46 @@ tbody tr:last-child td{border-bottom:none;}
       </div>
     </div>
 
+    <!-- EXPORT -->
+    <div class="view" id="view-export">
+      <div class="card">
+        <div class="card-head"><h3>Export Template 1 / 2</h3></div>
+        <div class="callout">
+          Reads whatever's already in the <code>Readings</code> tab for a company's <strong>Hourly</strong> data — however it got there, a manual Extraction run, a multi-day quota-limited backfill, or months of nightly Daily-auto runs — and converts it to Template 1/2 for any date range you pick. Uses the same facility_id / meter_id / eac_registry_id settings already configured for this company (Dashboard → click the company → edit there, or the Extraction tab's Export format section).
+        </div>
+        <div class="extraction-grid" style="grid-template-columns:1.4fr 1fr 1fr;">
+          <div class="field">
+            <label>Company</label>
+            <select id="expCompany"><option value="">Select a company…</option></select>
+          </div>
+          <div class="field">
+            <label>Start date</label>
+            <div class="date-field-wrap">
+              <input type="text" id="expStart" class="date-input" placeholder="dd/mm/yyyy" readonly autocomplete="off">
+              <button type="button" class="date-picker-btn" data-target="expStart" aria-label="Open calendar">📅</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>End date</label>
+            <div class="date-field-wrap">
+              <input type="text" id="expEnd" class="date-input" placeholder="dd/mm/yyyy" readonly autocomplete="off">
+              <button type="button" class="date-picker-btn" data-target="expEnd" aria-label="Open calendar">📅</button>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:12px;">
+          <button class="btn btn-primary" id="btnRunExport">Build export</button>
+          <span id="expStatus" style="font-size:.82rem;color:var(--muted);margin-left:10px;"></span>
+        </div>
+      </div>
+
+      <div class="card" id="expResultsCard" hidden>
+        <div class="card-head"><h3>Facilities ready to download</h3></div>
+        <div id="expSummary" style="font-size:.86rem;color:var(--muted);margin-bottom:12px;"></div>
+        <div id="expFacilityList"></div>
+      </div>
+    </div>
+
     <!-- SETTINGS -->
     <div class="view" id="view-settings">
       <div class="card">
@@ -417,7 +460,7 @@ tbody tr:last-child td{border-bottom:none;}
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://accounts.google.com/gsi/client"></script>
 <script src="js/brands.js"></script>
 <script src="js/signing.js"></script>
 <script src="js/auth-client.js"></script>
