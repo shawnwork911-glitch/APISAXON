@@ -739,6 +739,32 @@ const App = (() => {
     loadTemplateSettingsIntoForm(conn);
   }
 
+  // A global queue so that clicking "Queue extraction" for a second company
+  // while the first is still running doesn't let both jobs' API calls
+  // interleave — only one job's actual calls run at a time. This matters
+  // for two reasons: it avoids bursting the Google Sheets API's per-minute
+  // read quota, and (more importantly) it stops two simultaneous jobs for
+  // the SAME brand from collectively exceeding that brand's own daily call
+  // quota — each job only tracks its own count, so without this, two
+  // FusionSolar jobs running "at once" could together blow past 25/day
+  // without either one knowing about the other.
+  const extractionQueue = [];
+  let queueRunning = false;
+
+  function enqueueExtraction(task) {
+    extractionQueue.push(task);
+    runQueue();
+  }
+  async function runQueue() {
+    if (queueRunning) return;
+    queueRunning = true;
+    while (extractionQueue.length) {
+      const task = extractionQueue.shift();
+      try { await task(); } catch (e) { console.error("Queued extraction failed:", e); }
+    }
+    queueRunning = false;
+  }
+
   async function handleQueueExtraction() {
     const id = qs("extCompany").value;
     const conn = connections.find(c => c.id === id);
@@ -755,20 +781,14 @@ const App = (() => {
     }
 
     const brand = BRANDS[conn.brand];
-    let auth = activeAuthByConn[conn.id];
-    if (!auth) {
-      try {
-        auth = await brand.buildAuth(conn.credentials, ProxyClient.call);
-        activeAuthByConn[conn.id] = auth;
-      } catch (e) { alert(`Could not authenticate: ${e.message}`); return; }
-    }
-    const ctx = { call: ProxyClient.call, auth };
 
+    // Created immediately so it shows up in the Jobs list right away, even
+    // if it has to wait its turn behind another job that's already running.
     const jobRow = document.createElement("div");
     jobRow.className = "job-row";
     jobRow.innerHTML = `<div class="job-title">${escapeHtml(conn.companyName)} · ${resolution} · ${startDate} → ${endDate}</div>
       <div class="job-bar"><div class="job-bar-fill"></div></div>
-      <div class="job-status">Starting…</div>`;
+      <div class="job-status">${queueRunning || extractionQueue.length ? "Waiting for other extraction(s) to finish…" : "Starting…"}</div>`;
     qs("jobList").prepend(jobRow);
 
     const job = ExtractionEngine.createJob({
@@ -780,30 +800,50 @@ const App = (() => {
     cancelBtn.className = "btn btn-ghost job-cancel";
     cancelBtn.textContent = "Cancel";
     cancelBtn.addEventListener("click", () => {
+      // Cancels immediately whether it's already running or still waiting
+      // in the queue — for a queued-but-not-started job this just marks it
+      // stopped so runQueue() skips its real work when its turn comes.
       ExtractionEngine.stop(job.id);
       cancelBtn.disabled = true;
       cancelBtn.textContent = "Cancelling…";
     });
     jobRow.appendChild(cancelBtn);
 
-    await ExtractionEngine.run(job.id, ctx);
-
-    if ((job.status === "done" || job.status === "paused" || job.status === "stopped") && job.rowsCollected.length) {
-      try {
-        await SheetsClient.appendReadings(job.rowsCollected.map(r => ({
-          timestamp: r.timestamp, company: conn.companyName, brand: brand.label,
-          stationId: r.stationId, stationName: (conn.stations.find(s => s.id === r.stationId) || {}).name || r.stationId,
-          resolution, kwh: r.kwh,
-        })));
-        jobRow.querySelector(".job-status").textContent += " · Synced to Google Sheet";
-      } catch (e) {
-        jobRow.querySelector(".job-status").textContent += ` · Sheet sync failed (${e.message})`;
+    enqueueExtraction(async () => {
+      if (job.status === "stopped") {
+        jobRow.querySelector(".job-status").textContent = "Cancelled (was still waiting in the queue)";
+        cancelBtn.remove();
+        return;
       }
-    }
-    conn.cursor = job.connection.cursor;
-    await SheetsClient.saveConnection(conn).catch(() => {});
-    job._downloadRows = job.rowsCollected;
-    jobRow._job = job;
+
+      let auth = activeAuthByConn[conn.id];
+      if (!auth) {
+        try {
+          auth = await brand.buildAuth(conn.credentials, ProxyClient.call);
+          activeAuthByConn[conn.id] = auth;
+        } catch (e) { jobRow.querySelector(".job-status").textContent = `Error: could not authenticate — ${e.message}`; return; }
+      }
+      const ctx = { call: ProxyClient.call, auth };
+
+      await ExtractionEngine.run(job.id, ctx);
+
+      if ((job.status === "done" || job.status === "paused" || job.status === "stopped") && job.rowsCollected.length) {
+        try {
+          await SheetsClient.appendReadings(job.rowsCollected.map(r => ({
+            timestamp: r.timestamp, company: conn.companyName, brand: brand.label,
+            stationId: r.stationId, stationName: (conn.stations.find(s => s.id === r.stationId) || {}).name || r.stationId,
+            resolution, kwh: r.kwh,
+          })));
+          jobRow.querySelector(".job-status").textContent += " · Synced to Google Sheet";
+        } catch (e) {
+          jobRow.querySelector(".job-status").textContent += ` · Sheet sync failed (${e.message})`;
+        }
+      }
+      conn.cursor = job.connection.cursor;
+      await SheetsClient.saveConnection(conn).catch(() => {});
+      job._downloadRows = job.rowsCollected;
+      jobRow._job = job;
+    });
   }
 
   function renderJobProgress(jobRow, job, startDate, endDate) {
