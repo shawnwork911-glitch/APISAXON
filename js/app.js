@@ -297,26 +297,44 @@ const App = (() => {
       table.innerHTML = `<tbody><tr><td class="field-help">Nothing extracted yet for this company.</td></tr></tbody>`;
       return;
     }
-    // Grouped by resolution — dates here are approximate (not timezone-corrected
-    // per brand, unlike Template exports) since this is just a coverage overview.
+    // Grouped by resolution. Dates are extracted as plain text from the
+    // timestamp string — deliberately NOT run through `new Date(...)`, since
+    // that would interpret an already-local time string as the *viewer's own
+    // browser* timezone, then shift it when reformatting, silently rolling
+    // the date back or forward depending on the viewer's own UTC offset.
     const byResolution = {};
     for (const r of readings) {
       const bucket = byResolution[r.resolution] || (byResolution[r.resolution] = { count: 0, min: null, max: null });
       bucket.count++;
-      const n = Number(r.timestamp);
-      const d = !isNaN(n) && n > 1e10 ? new Date(n) : new Date(r.timestamp);
-      if (isNaN(d.getTime())) continue;
-      if (!bucket.min || d < bucket.min) bucket.min = d;
-      if (!bucket.max || d > bucket.max) bucket.max = d;
+      const dateStr = extractDateOnly(r.timestamp);
+      if (!dateStr) continue;
+      if (!bucket.min || dateStr < bucket.min) bucket.min = dateStr;
+      if (!bucket.max || dateStr > bucket.max) bucket.max = dateStr;
     }
-    const fmt = d => d ? d.toISOString().slice(0, 10) : "?";
     const order = ["Hourly", "Daily", "Monthly"];
     const resolutions = Object.keys(byResolution).sort((a, b) => order.indexOf(a) - order.indexOf(b));
     table.innerHTML = `<thead><tr><th>Resolution</th><th>Rows</th><th>Earliest</th><th>Latest</th></tr></thead><tbody>` +
       resolutions.map(res => {
         const b = byResolution[res];
-        return `<tr><td>${escapeHtml(res)}</td><td>${b.count}</td><td>${fmt(b.min)}</td><td>${fmt(b.max)}</td></tr>`;
+        return `<tr><td>${escapeHtml(res)}</td><td>${b.count}</td><td>${b.min || "?"}</td><td>${b.max || "?"}</td></tr>`;
       }).join("") + `</tbody>`;
+  }
+
+  // Current format: a plain "YYYY-MM-DD HH:MM:SS" local-time string (already
+  // correctly localized when it was written) — just take the date prefix,
+  // no Date object involved at all. Falls back to reading an older raw-epoch
+  // row's UTC calendar date (getUTC*, never local getters) for rows written
+  // before the readable-timestamp fix.
+  function extractDateOnly(timestamp) {
+    const s = String(timestamp).trim();
+    const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (m) return m[1];
+    const n = Number(s);
+    if (!isNaN(n) && n > 1e10) {
+      const d = new Date(n);
+      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+    }
+    return null;
   }
 
   function renderMissingFacilityWarning(conn) {
