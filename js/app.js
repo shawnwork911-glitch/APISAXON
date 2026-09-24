@@ -153,6 +153,7 @@ const App = (() => {
     qs("btnRunCompare").addEventListener("click", handleRunCompare);
     qs("btnDownloadCompare").addEventListener("click", handleDownloadCompare);
     qs("btnRunExport").addEventListener("click", handleRunExport);
+    qs("expResolution").addEventListener("change", syncExportFieldVisibility);
   }
 
   function showView(view) {
@@ -161,7 +162,7 @@ const App = (() => {
     document.querySelectorAll(".nav-btn[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === view));
     if (view === "extraction") { populateExtractionCompanySelect(); renderPersistedPendingJobs(); }
     if (view === "compare") populateCompareCompanySelect();
-    if (view === "export") populateExportCompanySelect();
+    if (view === "export") { populateExportCompanySelect(); syncExportFieldVisibility(); }
   }
 
   /* ---------------------------- settings / connection status ---------------------------- */
@@ -652,73 +653,126 @@ const App = (() => {
     });
   }
 
+  function syncExportFieldVisibility() {
+    const isHourly = qs("expResolution").value === "Hourly";
+    qs("expTemplateWrap").hidden = !isHourly;
+    qs("expMonthlyNote").hidden = isHourly;
+  }
+
   async function handleRunExport() {
     const id = qs("expCompany").value;
     const conn = connections.find(c => c.id === id);
     if (!conn) { alert("Pick a company first."); return; }
-    const settings = conn.templateSettings;
-    if (!settings || (settings.template !== "1" && settings.template !== "2")) {
-      alert(`${conn.companyName} isn't set up for Template export yet — open it from the Dashboard and set a Template + facility_id assignments first (or configure it in the Extraction tab's Export format section).`);
-      return;
-    }
+    const resolution = qs("expResolution").value;
     const startDate = DatePicker.getISO(qs("expStart"));
     const endDate = DatePicker.getISO(qs("expEnd"));
     if (!startDate || !endDate) { alert("Pick a start and end date."); return; }
 
     qs("btnRunExport").disabled = true;
-    qs("expStatus").textContent = "Reading Hourly rows from your Google Sheet…";
+    qs("expStatus").textContent = `Reading ${resolution} rows from your Google Sheet…`;
     qs("expResultsCard").hidden = true;
 
     try {
       const readings = await SheetsClient.listReadings(conn.companyName);
       const brandKey = conn.brand;
-      const utcOffset = settings.utcOffset ?? 8;
-      const filtered = readings.filter(r => {
-        if (r.resolution !== "Hourly") return false;
-        const wc = TemplateExport.wallClockFromRow(r, brandKey, utcOffset);
-        if (!wc) return false;
-        const localDate = `${wc.y}-${String(wc.mo).padStart(2, "0")}-${String(wc.d).padStart(2, "0")}`;
-        return localDate >= startDate && localDate <= endDate;
-      });
-      const groups = TemplateExport.build(filtered, brandKey, settings);
-      renderExportResults(conn, settings, groups, filtered.length);
-      qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.`;
+
+      if (resolution === "Hourly") {
+        // Facility mapping (station→facility_id, meter_id, eac_registry_id) still
+        // comes from what's configured on the company — only the template
+        // number (1 vs 2) is chosen fresh here, independent of that saved default.
+        const baseSettings = conn.templateSettings ? JSON.parse(JSON.stringify(conn.templateSettings)) : TemplateExport.defaultSettings("1");
+        baseSettings.template = qs("expTemplate").value;
+        const utcOffset = baseSettings.utcOffset ?? 8;
+        const filtered = readings.filter(r => {
+          if (r.resolution !== "Hourly") return false;
+          const wc = TemplateExport.wallClockFromRow(r, brandKey, utcOffset);
+          if (!wc) return false;
+          const localDate = `${wc.y}-${String(wc.mo).padStart(2, "0")}-${String(wc.d).padStart(2, "0")}`;
+          return localDate >= startDate && localDate <= endDate;
+        });
+        const groups = TemplateExport.build(filtered, brandKey, baseSettings);
+        renderExportResults(conn, { resolution, template: baseSettings.template }, groups, filtered.length, "Hourly");
+        qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.`;
+      } else {
+        const settingsForFacility = conn.templateSettings || {};
+        const startMonth = `${startDate.slice(0, 7)}-01`;
+        const filtered = readings.filter(r => {
+          if (r.resolution !== "Monthly") return false;
+          const wc = TemplateExport.wallClockFromRow(r, brandKey, settingsForFacility.utcOffset ?? 8);
+          if (!wc) return false;
+          const rowMonth = `${wc.y}-${String(wc.mo).padStart(2, "0")}-01`;
+          return rowMonth >= startMonth && rowMonth <= endDate;
+        });
+        const groups = buildMonthlyExportGroups(filtered, brandKey, settingsForFacility);
+        renderExportResults(conn, { resolution, template: null }, groups, filtered.length, "Monthly");
+        qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.`;
+      }
     } catch (e) {
       qs("expStatus").textContent = `Failed: ${e.message}`;
     }
     qs("btnRunExport").disabled = false;
   }
 
-  function renderExportResults(conn, settings, groups, rowCount) {
+  // The Monthly template is fixed and much simpler than Template 1/2: one
+  // row per STATION per month (not summed across stations sharing a
+  // facility_id — stationName stays its own column), tagged with its
+  // facility_id under the header "GEN ID" to match the reference format.
+  function buildMonthlyExportGroups(readings, brandKey, settings) {
+    const headers = ["GEN ID", "stationName", "collectTime", "PVYield"];
+    const byFacility = new Map(); // facilityId -> rows[]
+    for (const r of readings) {
+      const wc = TemplateExport.wallClockFromRow(r, brandKey, settings.utcOffset ?? 8);
+      if (!wc) continue;
+      const facilityId = TemplateExport.facilityKeyFor(r.stationId, settings);
+      const collectTime = `${wc.y}-${String(wc.mo).padStart(2, "0")}-01 00:00:00`;
+      const kwhR = Math.round((r.kwh || 0) * 100) / 100;
+      if (!byFacility.has(facilityId)) byFacility.set(facilityId, []);
+      byFacility.get(facilityId).push({ epoch: Date.UTC(wc.y, wc.mo - 1, 1), row: [facilityId, r.stationName, collectTime, kwhR] });
+    }
+    const groups = [];
+    for (const [facilityId, entries] of byFacility.entries()) {
+      entries.sort((a, b) => a.epoch - b.epoch);
+      groups.push({ facilityId, headers, rows: entries.map(e => e.row) });
+    }
+    groups.sort((a, b) => a.facilityId.localeCompare(b.facilityId));
+    return groups;
+  }
+
+  function renderExportResults(conn, exportKind, groups, rowCount, resolutionLabel) {
     qs("expResultsCard").hidden = false;
     qs("expSummary").innerHTML = groups.length
-      ? `${rowCount} hourly row(s) in range, grouped into <strong>${groups.length}</strong> facility file(s).`
-      : `No hourly rows found in that date range for this company.`;
+      ? `${rowCount} ${resolutionLabel.toLowerCase()} row(s) in range, grouped into <strong>${groups.length}</strong> facility file(s).`
+      : `No ${resolutionLabel.toLowerCase()} rows found in that date range for this company.`;
 
     const list = qs("expFacilityList");
     list.innerHTML = "";
     groups.forEach(g => {
       const row = document.createElement("div");
       row.className = "export-facility-row";
+      const formatLabel = exportKind.resolution === "Hourly" ? `Template ${exportKind.template}` : "Monthly template";
       row.innerHTML = `
         <div>
           <div style="font-weight:600;">${escapeHtml(g.facilityId)}</div>
-          <div class="meta">${g.rows.length} row(s) · Template ${escapeHtml(settings.template)}</div>
+          <div class="meta">${g.rows.length} row(s) · ${escapeHtml(formatLabel)}</div>
         </div>
         <button class="btn btn-primary" data-facility="${escapeHtml(g.facilityId)}">Download</button>`;
-      row.querySelector("button").addEventListener("click", () => downloadExportFacility(conn, settings, g));
+      row.querySelector("button").addEventListener("click", () => downloadExportFacility(conn, exportKind, g));
       list.appendChild(row);
     });
   }
 
-  function downloadExportFacility(conn, settings, group) {
-    const sheetName = settings.template === "1" ? "Data" : "MeterData";
-    const filenameSuffix = settings.template === "1" ? "template_1" : "template_2";
+  function downloadExportFacility(conn, exportKind, group) {
+    const safeFacility = group.facilityId.replace(/[^a-z0-9_-]+/gi, "_");
     const ws = XLSX.utils.aoa_to_sheet([group.headers, ...group.rows]);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, sheetName);
-    const safeFacility = group.facilityId.replace(/[^a-z0-9_-]+/gi, "_");
-    XLSX.writeFile(wb, `${conn.companyName}_${safeFacility}_export_${filenameSuffix}.xlsx`);
+    if (exportKind.resolution === "Hourly") {
+      const sheetName = exportKind.template === "1" ? "Data" : "MeterData";
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+      XLSX.writeFile(wb, `${conn.companyName}_${safeFacility}_export_template_${exportKind.template}.xlsx`);
+    } else {
+      XLSX.utils.book_append_sheet(wb, ws, "Data");
+      XLSX.writeFile(wb, `${conn.companyName}_${safeFacility}_export_monthly.xlsx`);
+    }
   }
 
   async function handleExtractionCompanyChange() {
@@ -859,8 +913,9 @@ const App = (() => {
 
       if ((job.status === "done" || job.status === "paused" || job.status === "stopped") && job.rowsCollected.length) {
         try {
+          const utcOffset = conn.templateSettings?.utcOffset ?? 8;
           await SheetsClient.appendReadings(job.rowsCollected.map(r => ({
-            timestamp: r.timestamp, company: conn.companyName, brand: brand.label,
+            timestamp: formatReadableTimestamp(r, conn.brand, utcOffset), company: conn.companyName, brand: brand.label,
             stationId: r.stationId, stationName: (conn.stations.find(s => s.id === r.stationId) || {}).name || r.stationId,
             resolution, kwh: r.kwh,
           })));
@@ -938,8 +993,9 @@ const App = (() => {
   // the Export tab, which reads accumulated Readings for any date range
   // rather than just this one job's in-memory rows.
   function downloadRowsAsExcel(job) {
+    const utcOffset = job.connection.templateSettings?.utcOffset ?? 8;
     const rows = job.rowsCollected.map(r => ({
-      Timestamp: r.timestamp,
+      Timestamp: formatReadableTimestamp(r, job.brand, utcOffset),
       Station: (job.connection.stations.find(s => s.id === r.stationId) || {}).name || r.stationId,
       Resolution: job.resolution,
       kWh: r.kwh,
@@ -951,6 +1007,20 @@ const App = (() => {
   }
 
   function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+  // FusionSolar's raw timestamp is an epoch number (e.g. 1782835200000) —
+  // fine for calculation, unreadable if written straight into the Sheet.
+  // SolarEdge's is already a readable local-time string from their API.
+  // This makes both consistent: a plain "YYYY-MM-DD HH:MM:SS" local string,
+  // reusing the exact same brand-aware wall-clock logic already verified
+  // correct in Template exports.
+  function formatReadableTimestamp(row, brandKey, utcOffset) {
+    const wc = TemplateExport.wallClockFromRow(row, brandKey, utcOffset ?? 8);
+    if (!wc) return String(row.timestamp);
+    const pad = n => String(n).padStart(2, "0");
+    return `${wc.y}-${pad(wc.mo)}-${pad(wc.d)} ${pad(wc.H)}:${pad(wc.Mi)}:${pad(wc.S)}`;
+  }
+
 
   return { boot };
 })();
