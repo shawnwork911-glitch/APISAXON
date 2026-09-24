@@ -20,19 +20,13 @@ jobs:
         working-directory: automation
         run: npm install
 
-      - name: TEMPORARY — DNS/network diagnostics for FusionSolar
+      - name: TEMPORARY — test Worker /diag from GitHub's own network
         continue-on-error: true
         run: |
-          echo "--- Default resolver ---"
-          nslookup sg5.fusionsolar.huawei.com || true
-          echo "--- Google DNS (8.8.8.8) ---"
-          nslookup sg5.fusionsolar.huawei.com 8.8.8.8 || true
-          echo "--- Cloudflare DNS (1.1.1.1) ---"
-          nslookup sg5.fusionsolar.huawei.com 1.1.1.1 || true
-          echo "--- Comparison: the GLOBAL endpoint (intl) ---"
-          nslookup intl.fusionsolar.huawei.com || true
-          echo "--- curl verbose to sg5 ---"
-          curl -v --max-time 10 https://sg5.fusionsolar.huawei.com/thirdData/login || true
+          curl -s https://solarlink-cors-proxy.saxon-solarlink.workers.dev/diag | tee /tmp/diag.json
+          echo ""
+          echo "--- parsed ---"
+          cat /tmp/diag.json | python3 -m json.tool || cat /tmp/diag.json
 
       - name: Run daily extraction
         working-directory: automation
