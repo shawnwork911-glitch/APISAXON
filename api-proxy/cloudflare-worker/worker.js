@@ -13,10 +13,25 @@
       SharePoint/Graph storage layer with no Azure AD app or admin
       consent needed — just your own Google Cloud project.
 
+   ACCESS CONTROL
+   Every request to both endpoints must carry a Google ID token (from
+   "Sign in with Google" on the web page) in an Authorization: Bearer
+   header. This Worker verifies that token against Google itself, then
+   checks the verified email against the "Users" tab of the same
+   spreadsheet — a request with no token, an invalid/expired token, or
+   an email not on that list is rejected with 401/403 before anything
+   else runs. This means the access control lives HERE, not just in the
+   web page — calling this Worker's URL directly, bypassing the site
+   entirely, is rejected the same way.
+
    Required Worker secrets/vars (see docs/SETUP.md):
      GOOGLE_SERVICE_ACCOUNT_EMAIL   (secret)
      GOOGLE_SERVICE_ACCOUNT_KEY     (secret — the PEM private key)
      GOOGLE_SPREADSHEET_ID          (var — not sensitive, the sheet's ID)
+     GOOGLE_SIGNIN_CLIENT_ID        (var — not sensitive, the OAuth Client ID
+                                      used for "Sign in with Google"; not a
+                                      secret, this is the same value the
+                                      browser uses openly)
    ===================================================================== */
 
 const ALLOWED_HOSTS = new Set([
@@ -43,7 +58,7 @@ function isAllowedHost(hostname) {
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
 export default {
@@ -51,12 +66,68 @@ export default {
     const { pathname } = new URL(request.url);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
 
+    // Every real request — /relay included — must present a verified,
+    // allow-listed identity before anything else runs.
+    const authResult = await authorize(request, env);
+    if (authResult instanceof Response) return authResult; // 401/403 — rejected
+
     if (pathname === "/relay" && request.method === "POST") return handleRelay(request);
-    if (pathname === "/sheets" && request.method === "POST") return handleSheets(request, env);
+    if (pathname === "/sheets" && request.method === "POST") return handleSheets(request, env, authResult);
 
     return json(404, { error: "Not found. POST to /relay or /sheets." });
   },
 };
+
+/* ---------------------------- access control ---------------------------- */
+
+const USERS_SHEET = "Users";
+
+// Verifies the caller's Google ID token against Google itself (so a forged
+// or expired token is rejected), confirms it was issued for THIS app (the
+// aud check — otherwise a valid Google token from an unrelated app would
+// pass), then looks up the verified email in the Users tab. Returns
+// { email, role } on success, or a ready-to-send Response on failure.
+async function authorize(request, env) {
+  if (!env.GOOGLE_SIGNIN_CLIENT_ID) {
+    return json(500, { error: "Worker is missing GOOGLE_SIGNIN_CLIENT_ID — set it in wrangler.toml [vars]. See docs/SETUP.md." });
+  }
+  const authHeader = request.headers.get("Authorization") || "";
+  const idToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!idToken) return json(401, { error: "Not signed in.", code: "NO_TOKEN" });
+
+  let info;
+  try {
+    const resp = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
+    if (!resp.ok) return json(401, { error: "Sign-in expired or invalid — please sign in again.", code: "BAD_TOKEN" });
+    info = await resp.json();
+  } catch {
+    return json(401, { error: "Could not verify sign-in — please sign in again.", code: "BAD_TOKEN" });
+  }
+  if (info.aud !== env.GOOGLE_SIGNIN_CLIENT_ID) return json(401, { error: "Sign-in token was not issued for this app.", code: "BAD_TOKEN" });
+  if (info.email_verified !== "true" && info.email_verified !== true) return json(403, { error: "Google account email is not verified." });
+
+  const email = String(info.email || "").trim().toLowerCase();
+  let role;
+  try {
+    role = await getGoogleAccessToken(env).then(token => getUserRole(env, token, email));
+  } catch (err) {
+    return json(502, { error: `Could not check the Users list: ${err.message}` });
+  }
+  if (!role) {
+    return json(403, {
+      error: `${email} is not on the approved users list yet. Ask your admin to add this email to the "Users" tab of the Google Sheet.`,
+      code: "NOT_AUTHORIZED",
+    });
+  }
+  return { email, role };
+}
+
+async function getUserRole(env, token, email) {
+  const data = await sheetsFetch(env, token, `/values/${USERS_SHEET}!A2:B1000`);
+  const rows = data.values || [];
+  const match = rows.find(r => (r[0] || "").trim().toLowerCase() === email);
+  return match ? (match[1] || "User").trim() : null;
+}
 
 /* ---------------------------- brand API relay ---------------------------- */
 
@@ -94,10 +165,14 @@ async function handleRelay(request) {
 
 const CONNECTIONS_SHEET = "Connections";
 const READINGS_SHEET = "Readings";
-// Connections columns: RowId, Title, Brand, Region, CredentialsJson, StationsJson, DailyAutoExtract, CursorJson, TemplateSettingsJson
+// Connections columns: RowId, Title, Brand, Region, CredentialsJson, StationsJson, DailyAutoExtract, CursorJson, TemplateSettingsJson, SubscriptionJson
+// SubscriptionJson: { hourly: bool, monthly: bool, startDate: "YYYY-MM-DD", endDate: "YYYY-MM-DD" } — drives the
+// scheduled GitHub Action (see automation/scripts/daily-extract.mjs): Hourly is pulled day-by-day up to
+// min(endDate, yesterday); once Hourly has fully caught up to endDate AND endDate has actually passed, Monthly
+// (if ticked) fires once for the whole range.
 // Readings columns:    Timestamp, Company, Brand, StationId, StationName, Resolution, kWh, RunAt
 
-async function handleSheets(request, env) {
+async function handleSheets(request, env, auth) {
   if (!env.GOOGLE_SERVICE_ACCOUNT_EMAIL || !env.GOOGLE_SERVICE_ACCOUNT_KEY || !env.GOOGLE_SPREADSHEET_ID) {
     return json(500, { error: "Worker is missing GOOGLE_SERVICE_ACCOUNT_EMAIL / GOOGLE_SERVICE_ACCOUNT_KEY / GOOGLE_SPREADSHEET_ID — set them with `wrangler secret put` / in wrangler.toml [vars]. See docs/SETUP.md." });
   }
@@ -108,9 +183,12 @@ async function handleSheets(request, env) {
   try {
     const token = await getGoogleAccessToken(env);
     switch (action) {
+      case "whoAmI": return json(200, { email: auth.email, role: auth.role });
       case "listConnections": return json(200, await listConnections(env, token));
       case "saveConnection": return json(200, await saveConnection(env, token, payload.connection));
-      case "deleteConnection": return json(200, await deleteConnection(env, token, payload.id));
+      case "deleteConnection":
+        if (auth.role !== "Admin") return json(403, { error: "Only Admins can remove a company connection." });
+        return json(200, await deleteConnection(env, token, payload.id));
       case "appendReadings": return json(200, await appendReadings(env, token, payload.rows));
       case "listReadings": return json(200, await listReadings(env, token, payload.company));
       default: return json(400, { error: `Unknown action '${action}'.` });
@@ -130,12 +208,12 @@ async function sheetsFetch(env, token, path, opts = {}) {
 }
 
 async function listConnections(env, token) {
-  const data = await sheetsFetch(env, token, `/values/${CONNECTIONS_SHEET}!A2:I1000`);
+  const data = await sheetsFetch(env, token, `/values/${CONNECTIONS_SHEET}!A2:J1000`);
   const rows = data.values || [];
   return rows
     .map((r, i) => ({ rowIndex: i + 2, id: r[0], companyName: r[1], brand: r[2], region: r[3],
       credentials: safeJson(r[4], {}), stations: safeJson(r[5], []), dailyAutoExtract: r[6] === "TRUE" || r[6] === true, cursor: safeJson(r[7], {}),
-      templateSettings: safeJson(r[8], null) }))
+      templateSettings: safeJson(r[8], null), subscription: safeJson(r[9], null) }))
     .filter(c => c.id && c.companyName); // blank Title = soft-deleted row
 }
 
@@ -143,18 +221,18 @@ async function saveConnection(env, token, conn) {
   const id = conn.id || crypto.randomUUID();
   const values = [[id, conn.companyName, conn.brand, conn.region || "", JSON.stringify(conn.credentials || {}),
     JSON.stringify(conn.stations || []), conn.dailyAutoExtract ? "TRUE" : "FALSE", JSON.stringify(conn.cursor || {}),
-    JSON.stringify(conn.templateSettings || null)]];
+    JSON.stringify(conn.templateSettings || null), JSON.stringify(conn.subscription || null)]];
 
   if (conn.id) {
     const rowIndex = await findRowIndex(env, token, CONNECTIONS_SHEET, conn.id);
     if (rowIndex) {
-      await sheetsFetch(env, token, `/values/${CONNECTIONS_SHEET}!A${rowIndex}:I${rowIndex}?valueInputOption=RAW`, {
+      await sheetsFetch(env, token, `/values/${CONNECTIONS_SHEET}!A${rowIndex}:J${rowIndex}?valueInputOption=RAW`, {
         method: "PUT", body: JSON.stringify({ values }),
       });
       return { id };
     }
   }
-  await sheetsFetch(env, token, `/values/${CONNECTIONS_SHEET}!A:I:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, {
+  await sheetsFetch(env, token, `/values/${CONNECTIONS_SHEET}!A:J:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, {
     method: "POST", body: JSON.stringify({ values }),
   });
   return { id };
@@ -164,7 +242,7 @@ async function deleteConnection(env, token, id) {
   const rowIndex = await findRowIndex(env, token, CONNECTIONS_SHEET, id);
   if (!rowIndex) return { deleted: false };
   // Clear rather than physically delete the row, so other rows' indices never shift underneath us.
-  await sheetsFetch(env, token, `/values/${CONNECTIONS_SHEET}!A${rowIndex}:I${rowIndex}:clear`, { method: "POST", body: "{}" });
+  await sheetsFetch(env, token, `/values/${CONNECTIONS_SHEET}!A${rowIndex}:J${rowIndex}:clear`, { method: "POST", body: "{}" });
   return { deleted: true };
 }
 

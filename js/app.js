@@ -111,6 +111,12 @@ const App = (() => {
     DatePicker.attach(qs("extEnd"));
     DatePicker.attach(qs("expStart"));
     DatePicker.attach(qs("expEnd"));
+    DatePicker.attach(qs("subStart"));
+    DatePicker.attach(qs("subEnd"));
+    qs("btnSubModalClose").addEventListener("click", closeSubscriptionModal);
+    qs("btnSubModalCancel").addEventListener("click", closeSubscriptionModal);
+    qs("btnSubModalSave").addEventListener("click", handleSaveSubscription);
+    qs("subModalOverlay").addEventListener("click", (e) => { if (e.target.id === "subModalOverlay") closeSubscriptionModal(); });
     qs("btnSignOut").addEventListener("click", handleSignOut);
     qs("authGateClientIdSave").addEventListener("click", () => {
       const id = qs("authGateClientIdInput").value.trim();
@@ -149,24 +155,6 @@ const App = (() => {
     qs("btnSaveSettings").addEventListener("click", handleSaveSettings);
     qs("btnQueueExtraction").addEventListener("click", handleQueueExtraction);
     qs("extCompany").addEventListener("change", handleExtractionCompanyChange);
-    qs("tmplFormat").addEventListener("change", () => { onTemplateFormatChange(); });
-    ["tmplTzLabel", "tmplUtcOffset", "tmplUnitOM"].forEach(id => {
-      qs(id).addEventListener("change", () => { syncTemplateFormStateFromFixedFields(); saveTemplateSettingsForCurrentCompany(); });
-    });
-    qs("tmplStationFacilityTable").addEventListener("input", (e) => {
-      if (!e.target.classList.contains("stationFacilityInput")) return;
-      templateFormState.stationFacility[e.target.dataset.station] = e.target.value;
-      renderFacilityGroupsTable();
-    });
-    qs("tmplStationFacilityTable").addEventListener("change", saveTemplateSettingsForCurrentCompany);
-    qs("tmplFacilityGroupsTable").addEventListener("change", (e) => {
-      const fid = e.target.dataset.facility;
-      if (!fid) return;
-      templateFormState.facilityGroups[fid] = templateFormState.facilityGroups[fid] || {};
-      if (e.target.classList.contains("facilityMeterInput")) templateFormState.facilityGroups[fid].meterId = e.target.value;
-      if (e.target.classList.contains("facilityRegistrySelect")) templateFormState.facilityGroups[fid].eacRegistryId = e.target.value;
-      saveTemplateSettingsForCurrentCompany();
-    });
     qs("btnRunCompare").addEventListener("click", handleRunCompare);
     qs("btnDownloadCompare").addEventListener("click", handleDownloadCompare);
     qs("btnRunExport").addEventListener("click", handleRunExport);
@@ -257,12 +245,12 @@ const App = (() => {
         <div class="badge" style="background:${brand.color}">${brand.badge}</div>
         <div class="company-main" data-action="view-stations" data-id="${conn.id}">
           <div class="company-name">${escapeHtml(conn.companyName)}</div>
-          <div class="company-sub">${brand.label} · ${(conn.stations || []).length} station(s)${conn.dailyAutoExtract ? " · Daily auto-extract on" : ""}</div>
+          <div class="company-sub">${brand.label} · ${(conn.stations || []).length} station(s)${subscriptionSummary(conn)}</div>
         </div>
         <div class="company-status">${brand.confidence === "verified" ? "<span class=\"pill ok\">Ready</span>" : "<span class=\"pill warn\">Untested endpoints</span>"}${missingBadge}</div>
         <div class="company-actions">
-          <button class="btn ${conn.dailyAutoExtract ? "btn-primary" : "btn-ghost"}" data-action="toggle-auto" data-id="${conn.id}">
-            ${conn.dailyAutoExtract ? "Daily auto: ON" : "Daily auto: OFF"}
+          <button class="btn ${conn.subscription?.hourly || conn.subscription?.monthly ? "btn-primary" : "btn-ghost"}" data-action="subscription" data-id="${conn.id}">
+            Subscription${conn.subscription?.hourly || conn.subscription?.monthly ? " ✓" : ""}
           </button>
           <button class="btn btn-ghost" data-action="extract" data-id="${conn.id}">Extract</button>
           ${currentRole === "Admin" ? `<button class="btn btn-ghost" data-action="delete" data-id="${conn.id}">Remove</button>` : ""}
@@ -270,15 +258,24 @@ const App = (() => {
       root.appendChild(row);
     }
     root.querySelectorAll("[data-action='view-stations']").forEach(el => el.addEventListener("click", () => openStationsModal(el.dataset.id)));
-    root.querySelectorAll("[data-action='toggle-auto']").forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); handleToggleAutoExtract(b.dataset.id); }));
+    root.querySelectorAll("[data-action='subscription']").forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); openSubscriptionModal(b.dataset.id); }));
     root.querySelectorAll("[data-action='extract']").forEach(b => b.addEventListener("click", () => { showView("extraction"); qs("extCompany").value = b.dataset.id; handleExtractionCompanyChange(); }));
     root.querySelectorAll("[data-action='delete']").forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); handleDeleteConnection(b.dataset.id); }));
   }
 
+  function subscriptionSummary(conn) {
+    const s = conn.subscription;
+    if (!s || (!s.hourly && !s.monthly)) return "";
+    const parts = [];
+    if (s.hourly) parts.push("Hourly");
+    if (s.monthly) parts.push("Monthly");
+    return ` · Subscribed (${parts.join(" + ")}, ${s.startDate || "?"} → ${s.endDate || "?"})`;
+  }
+
   // stationsModalState holds a working copy of the CURRENTLY OPEN company's
-  // templateSettings while the modal is open — separate from templateFormState
-  // (the Extraction tab's own working copy) so opening this modal doesn't
-  // clobber whatever's being edited there for a possibly-different company.
+  // templateSettings while the modal is open (this is the only place these
+  // settings are edited now — the Extraction tab's own copy was removed
+  // since the Export tab supersedes it).
   let stationsModalState = null;
   let stationsModalConnId = null;
 
@@ -377,17 +374,52 @@ const App = (() => {
     if (currentView === "dashboard") renderDashboard(); // refresh the missing-facility_id badge without a full reload
   }
 
-  async function handleToggleAutoExtract(id) {
+  let subscriptionModalConnId = null;
+
+  function openSubscriptionModal(id) {
     const conn = connections.find(c => c.id === id);
     if (!conn) return;
-    conn.dailyAutoExtract = !conn.dailyAutoExtract;
+    subscriptionModalConnId = id;
+    const s = conn.subscription || {};
+    qs("subModalTitle").textContent = `${conn.companyName} — Subscription`;
+    qs("subHourly").checked = !!s.hourly;
+    qs("subMonthly").checked = !!s.monthly;
+    if (s.startDate) DatePicker.setFromISO(qs("subStart"), s.startDate);
+    else { qs("subStart").value = ""; qs("subStart").dataset.iso = ""; }
+    if (s.endDate) DatePicker.setFromISO(qs("subEnd"), s.endDate);
+    else { qs("subEnd").value = ""; qs("subEnd").dataset.iso = ""; }
+    qs("subModalOverlay").classList.add("active");
+  }
+  function closeSubscriptionModal() { qs("subModalOverlay").classList.remove("active"); }
+
+  async function handleSaveSubscription() {
+    const conn = connections.find(c => c.id === subscriptionModalConnId);
+    if (!conn) return;
+    const hourly = qs("subHourly").checked;
+    const monthly = qs("subMonthly").checked;
+    const startDate = DatePicker.getISO(qs("subStart"));
+    const endDate = DatePicker.getISO(qs("subEnd"));
+    if ((hourly || monthly) && (!startDate || !endDate)) {
+      alert("Pick a start and end date for the subscription.");
+      return;
+    }
+    if (endDate && startDate && endDate < startDate) {
+      alert("End date is before the start date.");
+      return;
+    }
+    const prevSubscription = conn.subscription;
+    const prevDaily = conn.dailyAutoExtract;
+    conn.subscription = { hourly, monthly, startDate, endDate };
+    conn.dailyAutoExtract = hourly || monthly; // kept for the "on/off" style display + backward compatibility
     try {
       await SheetsClient.saveConnection(conn);
+      closeSubscriptionModal();
+      renderDashboard();
     } catch (e) {
-      conn.dailyAutoExtract = !conn.dailyAutoExtract; // revert on failure
+      conn.subscription = prevSubscription;
+      conn.dailyAutoExtract = prevDaily;
       alert(`Could not save: ${e.message}`);
     }
-    renderDashboard();
   }
 
   async function handleDeleteConnection(id) {
@@ -735,105 +767,6 @@ const App = (() => {
     loadTemplateSettingsIntoForm(conn);
   }
 
-  // ---------------------------- export format (Template 1 / 2) ----------------------------
-  // templateFormState is the live working copy for whichever company is currently selected
-  // in the Extraction tab — table inputs mutate it directly (event delegation), and it's
-  // persisted onto that connection whenever anything changes.
-  let templateFormState = null;
-
-  function syncTemplateFieldVisibility() {
-    const fmt = qs("tmplFormat").value;
-    qs("tmplFieldsCommon").hidden = fmt === "raw";
-    qs("tmplFieldsT1").hidden = fmt !== "1";
-    qs("tmplFieldsUnit").hidden = fmt !== "2";
-    qs("tmplStationFacilityWrap").hidden = fmt === "raw";
-    qs("tmplFacilityGroupsWrap").hidden = fmt !== "2";
-  }
-
-  function loadTemplateSettingsIntoForm(conn) {
-    const saved = conn.templateSettings;
-    const fmt = saved?.template || "raw";
-    templateFormState = saved ? JSON.parse(JSON.stringify(saved)) : TemplateExport.defaultSettings("1");
-    templateFormState.template = fmt;
-    templateFormState.stationFacility = templateFormState.stationFacility || {};
-    templateFormState.facilityGroups = templateFormState.facilityGroups || {};
-
-    qs("tmplFormat").value = fmt;
-    qs("tmplTzLabel").value = templateFormState.tzLabel ?? "SGT";
-    qs("tmplUtcOffset").value = templateFormState.utcOffset ?? 8;
-    qs("tmplUnitOM").value = templateFormState.unitOM ?? "MWh";
-    syncTemplateFieldVisibility();
-    renderStationFacilityTable(conn);
-    renderFacilityGroupsTable();
-  }
-
-  function onTemplateFormatChange() {
-    if (!templateFormState) templateFormState = TemplateExport.defaultSettings("1");
-    templateFormState.template = qs("tmplFormat").value;
-    if (templateFormState.template === "1") { templateFormState.tzLabel = templateFormState.tzLabel || "SGT"; }
-    if (templateFormState.template === "2") { templateFormState.tzLabel = templateFormState.tzLabel || "Asia/Singapore"; templateFormState.unitOM = templateFormState.unitOM || "MWh"; }
-    qs("tmplTzLabel").value = templateFormState.tzLabel || "SGT";
-    syncTemplateFieldVisibility();
-    saveTemplateSettingsForCurrentCompany();
-  }
-
-  function syncTemplateFormStateFromFixedFields() {
-    if (!templateFormState) return;
-    templateFormState.tzLabel = qs("tmplTzLabel").value.trim();
-    templateFormState.utcOffset = parseFloat(qs("tmplUtcOffset").value) || 0;
-    templateFormState.unitOM = qs("tmplUnitOM").value;
-  }
-
-  function renderStationFacilityTable(conn) {
-    const wrap = qs("tmplStationFacilityTable");
-    const stations = conn.stations || [];
-    if (!stations.length) {
-      wrap.innerHTML = `<tbody><tr><td class="field-help">No cached stations for this company yet.</td></tr></tbody>`;
-      return;
-    }
-    wrap.innerHTML = `<thead><tr><th>Station</th><th>facility_id</th></tr></thead><tbody>` +
-      stations.map(s => `
-        <tr>
-          <td>${escapeHtml(s.name)}<div class="field-help">${escapeHtml(s.id)}</div></td>
-          <td><input type="text" class="stationFacilityInput" data-station="${escapeHtml(s.id)}"
-                     value="${escapeHtml(templateFormState.stationFacility[s.id] || "")}"
-                     placeholder="${escapeHtml(s.id)}"></td>
-        </tr>`).join("") + `</tbody>`;
-  }
-
-  function renderFacilityGroupsTable() {
-    const wrap = qs("tmplFacilityGroupsTable");
-    const distinct = [...new Set(Object.values(templateFormState.stationFacility).filter(v => v && v.trim()))];
-    if (!distinct.length) {
-      wrap.innerHTML = `<tbody><tr><td class="field-help">No facility_id assigned yet — enter one above to see its group settings here.</td></tr></tbody>`;
-      return;
-    }
-    distinct.forEach(fid => {
-      templateFormState.facilityGroups[fid] = templateFormState.facilityGroups[fid] || {};
-      if (templateFormState.facilityGroups[fid].meterId === undefined) templateFormState.facilityGroups[fid].meterId = fid;
-    });
-    wrap.innerHTML = `<thead><tr><th>facility_id</th><th>meter_id</th><th>eac_registry_id</th></tr></thead><tbody>` +
-      distinct.map(fid => {
-        const g = templateFormState.facilityGroups[fid] || {};
-        return `<tr>
-          <td>${escapeHtml(fid)}</td>
-          <td><input type="text" class="facilityMeterInput" data-facility="${escapeHtml(fid)}" value="${escapeHtml(g.meterId ?? fid)}"></td>
-          <td><select class="facilityRegistrySelect" data-facility="${escapeHtml(fid)}">
-                <option value="tigr" ${g.eacRegistryId !== "irec" ? "selected" : ""}>TIGR</option>
-                <option value="irec" ${g.eacRegistryId === "irec" ? "selected" : ""}>I-REC</option>
-              </select></td>
-        </tr>`;
-      }).join("") + `</tbody>`;
-  }
-
-  async function saveTemplateSettingsForCurrentCompany() {
-    const id = qs("extCompany").value;
-    const conn = connections.find(c => c.id === id);
-    if (!conn || !templateFormState) return;
-    conn.templateSettings = templateFormState;
-    await SheetsClient.saveConnection(conn).catch(() => {}); // best-effort — a later save will retry
-  }
-
   async function handleQueueExtraction() {
     const id = qs("extCompany").value;
     const conn = connections.find(c => c.id === id);
@@ -843,6 +776,11 @@ const App = (() => {
     const startDate = DatePicker.getISO(qs("extStart"));
     const endDate = DatePicker.getISO(qs("extEnd"));
     if (!startDate || !endDate) { alert("Pick a start and end date."); return; }
+    const today = new Date().toISOString().slice(0, 10);
+    if (endDate > today) {
+      alert("End date can't be in the future — data for days that haven't happened yet doesn't exist. Pick today or an earlier date.");
+      return;
+    }
 
     const brand = BRANDS[conn.brand];
     let auth = activeAuthByConn[conn.id];
@@ -865,7 +803,6 @@ const App = (() => {
       connection: conn, brand: conn.brand, resolution, startDate, endDate, stationIds,
       onProgress: (j) => renderJobProgress(jobRow, j, startDate, endDate),
     });
-    job.exportSettings = JSON.parse(JSON.stringify(templateFormState || { template: "raw" }));
 
     const cancelBtn = document.createElement("button");
     cancelBtn.className = "btn btn-ghost job-cancel";
@@ -914,35 +851,16 @@ const App = (() => {
     if ((job.status === "done" || job.status === "paused" || job.status === "stopped") && job.rowsCollected.length && !jobRow.querySelector(".job-download")) {
       const dl = document.createElement("button");
       dl.className = "btn btn-ghost job-download";
-      const fmt = job.exportSettings?.template;
-      dl.textContent = fmt === "1" ? "Download (Template 1)" : fmt === "2" ? "Download (Template 2)" : "Download Excel";
+      dl.textContent = "Download Excel";
       dl.addEventListener("click", () => downloadRowsAsExcel(job));
       jobRow.appendChild(dl);
     }
   }
 
+  // Always raw (Timestamp/Station/Resolution/kWh) — for Template 1/2, use
+  // the Export tab, which reads accumulated Readings for any date range
+  // rather than just this one job's in-memory rows.
   function downloadRowsAsExcel(job) {
-    const fmt = job.exportSettings?.template;
-
-    if ((fmt === "1" || fmt === "2") && job.resolution === "Hourly") {
-      const groups = TemplateExport.build(job.rowsCollected, job.brand, job.exportSettings);
-      if (!groups.length) { alert("No rows to export."); return; }
-      const sheetName = fmt === "1" ? "Data" : "MeterData";
-      const filenameSuffix = fmt === "1" ? "template_1" : "template_2";
-      // One workbook per distinct facility_id — mirrors the reference converter's
-      // "each group becomes its own output file" behaviour when stations are summed
-      // into separate facilities. Sequential writeFile calls trigger one browser
-      // download prompt per file.
-      groups.forEach(g => {
-        const ws = XLSX.utils.aoa_to_sheet([g.headers, ...g.rows]);
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, sheetName);
-        const safeFacility = g.facilityId.replace(/[^a-z0-9_-]+/gi, "_");
-        XLSX.writeFile(wb, `${job.connection.companyName}_${safeFacility}_${job.startDate}_${job.endDate}_${filenameSuffix}.xlsx`);
-      });
-      return;
-    }
-
     const rows = job.rowsCollected.map(r => ({
       Timestamp: r.timestamp,
       Station: (job.connection.stations.find(s => s.id === r.stationId) || {}).name || r.stationId,

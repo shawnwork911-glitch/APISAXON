@@ -14,23 +14,25 @@
         Google access token (same pattern as the CORS proxy's /sheets
         route, just running in Node instead of a Workers isolate).
      2. Read every row in the sheet's "Connections" tab (including each
-        company's saved Template export settings — station→facility_id
-        mapping and Template 1/2 choice, same ones set in the web app's
-        Extraction tab).
-     3. For each connection with DailyAutoExtract = TRUE, pull "hourly"
-        readings from its cursor date up to yesterday, respecting the
-        brand's daily call quota (stops cleanly and resumes next run —
-        same behaviour as fusionsolar_bot.py / solaredge_bot.py).
+        company's Subscription settings — hourly/monthly ticks and a
+        start/end date range — and its Template export settings).
+     3. For each connection with a Subscription (Hourly and/or Monthly
+        ticked): pull Hourly readings day-by-day from its cursor (or the
+        subscription's start date) up to whichever is earlier — the
+        subscription's end date, or yesterday — respecting the brand's
+        daily call quota (stops cleanly and resumes next run). Once
+        Hourly has fully caught up to the end date AND that end date has
+        actually passed, Monthly fires exactly once for the whole range
+        (not repeatedly) and is marked done via the cursor.
      4. Append the raw rows to the "Readings" tab (unchanged — this is
         the audit trail regardless of template settings).
      5. If a connection has a Template 1/2 export configured, group its
-        rows by facility_id (summing stations that share one, exactly
-        like the web app's manual download) and append the formatted
+        Hourly rows by facility_id (summing stations that share one,
+        exactly like the web app's Export tab) and append the formatted
         rows into a dedicated tab per facility — auto-created the first
-        time that facility is seen, named e.g. "GEN3294_T1" — since this
-        is an unattended script there's no download prompt, so the
-        Sheet itself is where the Template-formatted output lives.
-     6. Write the new cursor back onto that connection's row.
+        time that facility is seen, named e.g. "GEN3294_T1".
+     6. Write the new cursor (including whether Monthly is done) back
+        onto that connection's row.
 
    Required environment variables (set as GitHub Actions secrets):
      GOOGLE_SERVICE_ACCOUNT_EMAIL
@@ -64,17 +66,21 @@ async function main() {
   const connections = await listConnections(token);
 
   for (const conn of connections) {
-    if (!conn.dailyAutoExtract) continue;
+    const sub = conn.subscription;
+    if (!sub || (!sub.hourly && !sub.monthly)) continue;
     console.log(`\n=== ${conn.companyName} (${conn.brand}) ===`);
     try {
-      const rows = await extractForConnection(conn);
-      if (rows.length) {
-        await appendReadings(token, rows);
-        console.log(`  -> appended ${rows.length} row(s) to the Readings tab`);
+      const { hourlyRows, monthlyRows } = await processSubscription(conn);
+      const allRows = [...hourlyRows, ...monthlyRows];
+      if (allRows.length) {
+        await appendReadings(token, allRows);
+        console.log(`  -> appended ${allRows.length} row(s) to Readings (${hourlyRows.length} hourly, ${monthlyRows.length} monthly)`);
 
         const settings = conn.templateSettings;
-        if (settings && (settings.template === "1" || settings.template === "2")) {
-          const groups = buildTemplateGroups(rows, conn.brand, settings);
+        if (settings && (settings.template === "1" || settings.template === "2") && hourlyRows.length) {
+          // Template tabs are hourly-based (matches the web app's Export tab) — Monthly rows
+          // aren't converted, they only ever land in the raw Readings tab.
+          const groups = buildTemplateGroups(hourlyRows, conn.brand, settings);
           for (const g of groups) {
             const tabName = sanitizeTabName(`${g.facilityId}_T${settings.template}`);
             await ensureSheetTab(token, existingTabs, tabName, g.headers);
@@ -83,7 +89,7 @@ async function main() {
           }
         }
       } else {
-        console.log("  -> nothing new to extract (quota reached, or already up to date)");
+        console.log("  -> nothing new to extract yet (quota reached, already caught up, or waiting for the end date to pass)");
       }
       await saveCursor(token, conn);
     } catch (err) {
@@ -92,21 +98,59 @@ async function main() {
   }
 }
 
-/* ---------------- per-brand extraction (mirrors js/brands.js) ---------------- */
+/* ---------------- subscription sequencing: Hourly first, Monthly once fully caught up ---------------- */
 
-async function extractForConnection(conn) {
+async function processSubscription(conn) {
+  const sub = conn.subscription;
   const quota = QUOTAS[conn.brand] || { perDay: 50, delayMs: 1000 };
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-  const startCursor = conn.cursor?.Hourly || yesterday;
+  let hourlyRows = [];
+  let monthlyRows = [];
 
-  if (conn.brand === "fusionsolar") return extractFusionSolar(conn, startCursor, yesterday, quota);
-  if (conn.brand === "solaredge") return extractSolarEdge(conn, startCursor, yesterday, quota);
+  if (sub.hourly) {
+    const effectiveEnd = sub.endDate < yesterday ? sub.endDate : yesterday;
+    const startCursor = conn.cursor?.Hourly || sub.startDate;
+    if (startCursor <= effectiveEnd) {
+      hourlyRows = await extractHourly(conn, startCursor, effectiveEnd, quota);
+    } else {
+      console.log(`  -> Hourly already caught up to ${effectiveEnd === sub.endDate ? "its end date" : "yesterday"} for now`);
+    }
+  }
 
+  // Monthly only fires once, and only once Hourly (if also subscribed) has
+  // genuinely reached the subscription's end date — not just "yesterday",
+  // since the end date itself might still be in the future.
+  const hourlyCaughtUp = !sub.hourly || (conn.cursor?.Hourly && conn.cursor.Hourly >= sub.endDate);
+  const endDatePassed = !!sub.endDate && sub.endDate <= yesterday;
+  if (sub.monthly && !conn.cursor?.MonthlyDone && hourlyCaughtUp && endDatePassed) {
+    console.log(`  -> Hourly complete and end date has passed — pulling Monthly for ${sub.startDate} → ${sub.endDate}`);
+    monthlyRows = await extractMonthly(conn, sub.startDate, sub.endDate, quota);
+    conn.cursor = conn.cursor || {};
+    conn.cursor.MonthlyDone = true;
+  } else if (sub.monthly && conn.cursor?.MonthlyDone) {
+    console.log("  -> Monthly already collected for this subscription");
+  }
+
+  return { hourlyRows, monthlyRows };
+}
+
+/* ---------------- per-brand extraction (mirrors js/brands.js) ---------------- */
+
+async function extractHourly(conn, startCursor, endCursor, quota) {
+  if (conn.brand === "fusionsolar") return extractFusionSolarHourly(conn, startCursor, endCursor, quota);
+  if (conn.brand === "solaredge") return extractSolarEdgeHourly(conn, startCursor, endCursor, quota);
   console.log(`  [i] ${conn.brand} historical endpoint is not confirmed yet (best-effort brand) — skipping automated pull. See js/brands.js docsNote.`);
   return [];
 }
 
-async function extractFusionSolar(conn, startCursor, endCursor, quota) {
+async function extractMonthly(conn, startDate, endDate, quota) {
+  if (conn.brand === "fusionsolar") return extractFusionSolarMonthly(conn, startDate, endDate, quota);
+  if (conn.brand === "solaredge") return extractSolarEdgeMonthly(conn, startDate, endDate, quota);
+  console.log(`  [i] ${conn.brand} Monthly endpoint is not confirmed yet (best-effort brand) — skipping.`);
+  return [];
+}
+
+async function fusionSolarAuth(conn) {
   const c = conn.credentials;
   const regionMap = {
     intl: "https://intl.fusionsolar.huawei.com/thirdData",
@@ -114,7 +158,6 @@ async function extractFusionSolar(conn, startCursor, endCursor, quota) {
     eu5: "https://eu5.fusionsolar.huawei.com/thirdData",
   };
   const base = c.baseUrl || regionMap[c.region] || regionMap.intl;
-
   const loginResp = await fetch(`${base}/login`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ userName: c.username, systemCode: c.systemCode }),
@@ -123,11 +166,13 @@ async function extractFusionSolar(conn, startCursor, endCursor, quota) {
   if (!loginData.success) throw new Error(loginData.message || "FusionSolar login failed");
   const token = loginData?.data?.xsrfToken || loginData?.xsrfToken || loginResp.headers.get("xsrf-token");
   if (!token) throw new Error("FusionSolar login OK but no XSRF-TOKEN returned");
-  const headers = { "Content-Type": "application/json", "XSRF-TOKEN": token };
-
   const stationCodes = (conn.stations || []).map(s => s.id).join(",");
   if (!stationCodes) throw new Error("No cached stations for this connection — reconnect it in the web app to fetch stations first.");
+  return { base, headers: { "Content-Type": "application/json", "XSRF-TOKEN": token }, stationCodes };
+}
 
+async function extractFusionSolarHourly(conn, startCursor, endCursor, quota) {
+  const { base, headers, stationCodes } = await fusionSolarAuth(conn);
   const rows = [];
   let calls = 0;
   const days = enumerateDays(startCursor, endCursor);
@@ -151,7 +196,37 @@ async function extractFusionSolar(conn, startCursor, endCursor, quota) {
   return rows;
 }
 
-async function extractSolarEdge(conn, startCursor, endCursor, quota) {
+// FusionSolar's getKpiStationMonth takes one cursor per YEAR and returns
+// that whole year's monthly breakdown in one call — so a multi-year
+// subscription range costs one call per year, not one per month.
+async function extractFusionSolarMonthly(conn, startDate, endDate, quota) {
+  const { base, headers, stationCodes } = await fusionSolarAuth(conn);
+  const startYear = new Date(startDate).getFullYear();
+  const endYear = new Date(endDate).getFullYear();
+  const rows = [];
+  let calls = 0;
+  for (let y = startYear; y <= endYear; y++) {
+    if (calls >= quota.perDay) break;
+    const ms = new Date(y, 6, 1, 12, 0, 0).getTime();
+    const resp = await fetch(`${base}/getKpiStationMonth`, { method: "POST", headers, body: JSON.stringify({ stationCodes, collectTime: ms }) });
+    const data = await resp.json();
+    calls++;
+    if (data.failCode === 407) break;
+    for (const row of (data.data || [])) {
+      const rowDate = new Date(row.collectTime).toISOString().slice(0, 7); // YYYY-MM
+      if (rowDate < startDate.slice(0, 7) || rowDate > endDate.slice(0, 7)) continue; // outside the requested range
+      rows.push({
+        timestamp: row.collectTime, company: conn.companyName, brand: "FusionSolar",
+        stationId: row.stationCode, stationName: nameFor(conn, row.stationCode), resolution: "Monthly",
+        kwh: Number(row.dataItemMap?.inverter_power ?? row.dataItemMap?.product_power ?? 0),
+      });
+    }
+    await sleep(quota.delayMs);
+  }
+  return rows;
+}
+
+async function extractSolarEdgeHourly(conn, startCursor, endCursor, quota) {
   const c = conn.credentials;
   const base = c.baseUrl || "https://monitoringapi.solaredge.com";
   const resp = await fetch(
@@ -171,6 +246,31 @@ async function extractSolarEdge(conn, startCursor, endCursor, quota) {
     }
   }
   conn.cursor = conn.cursor || {}; conn.cursor.Hourly = endCursor;
+  await sleep(quota.delayMs);
+  return rows;
+}
+
+// SolarEdge's energyDetails supports MONTH granularity directly over any
+// date range in one call — no year-by-year iteration needed.
+async function extractSolarEdgeMonthly(conn, startDate, endDate, quota) {
+  const c = conn.credentials;
+  const base = c.baseUrl || "https://monitoringapi.solaredge.com";
+  const resp = await fetch(
+    `${base}/site/${c.siteId}/energyDetails?timeUnit=MONTH&meters=PRODUCTION`
+    + `&startTime=${startDate} 00:00:00&endTime=${endDate} 23:59:59&api_key=${encodeURIComponent(c.apiKey)}`
+  );
+  const data = await resp.json();
+  const meters = data?.energyDetails?.meters || [];
+  const rows = [];
+  for (const m of meters) {
+    for (const v of (m.values || [])) {
+      rows.push({
+        timestamp: v.date, company: conn.companyName, brand: "SolarEdge",
+        stationId: c.siteId, stationName: nameFor(conn, c.siteId), resolution: "Monthly",
+        kwh: (v.value || 0) / 1000,
+      });
+    }
+  }
   await sleep(quota.delayMs);
   return rows;
 }
@@ -325,12 +425,12 @@ async function appendRowsToTab(token, tabName, rows) {
 }
 
 async function listConnections(token) {
-  const data = await sheetsFetch(token, `/values/${CONNECTIONS_SHEET}!A2:I1000`);
+  const data = await sheetsFetch(token, `/values/${CONNECTIONS_SHEET}!A2:J1000`);
   const rows = data.values || [];
   return rows
     .map((r, i) => ({ rowIndex: i + 2, id: r[0], companyName: r[1], brand: r[2], region: r[3],
       credentials: safeJson(r[4], {}), stations: safeJson(r[5], []), dailyAutoExtract: r[6] === "TRUE", cursor: safeJson(r[7], {}),
-      templateSettings: safeJson(r[8], null) }))
+      templateSettings: safeJson(r[8], null), subscription: safeJson(r[9], null) }))
     .filter(c => c.id && c.companyName);
 }
 

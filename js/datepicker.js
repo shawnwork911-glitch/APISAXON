@@ -34,6 +34,16 @@ const DatePicker = (() => {
 
   function getISO(inputEl) { return inputEl?.dataset.iso || ""; }
 
+  // Pre-fills an input from a stored ISO date (e.g. re-opening a modal with
+  // previously-saved settings) — same display formatting as picking a day.
+  function setFromISO(inputEl, iso) {
+    if (!inputEl || !iso) return;
+    const [y, m, d] = iso.split("-").map(Number);
+    if (!y || !m || !d) return;
+    inputEl.value = toDisplay(y, m - 1, d);
+    inputEl.dataset.iso = iso;
+  }
+
   function setValue(inputEl, y, m, d) {
     inputEl.value = toDisplay(y, m, d);
     inputEl.dataset.iso = toISO(y, m, d);
@@ -122,5 +132,5 @@ const DatePicker = (() => {
     });
   }
 
-  return { attach, getISO };
+  return { attach, getISO, setFromISO };
 })();

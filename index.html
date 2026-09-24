@@ -251,49 +251,6 @@ tbody tr:last-child td{border-bottom:none;}
       </div>
 
       <div class="card">
-        <div class="card-head"><h3>Export format</h3></div>
-        <div class="callout">
-          Applies to the <strong>Hourly</strong> resolution — ported from your Generation Data Converter and matched against real reference exports. Settings are remembered per company.
-        </div>
-        <div class="field" style="max-width:340px;">
-          <label>Format</label>
-          <select id="tmplFormat">
-            <option value="raw">Raw (Timestamp / Station / Resolution / kWh)</option>
-            <option value="1">Template 1 — Hourly Format</option>
-            <option value="2">Template 2 — STX format</option>
-          </select>
-        </div>
-        <div id="tmplFieldsCommon" hidden class="extraction-grid" style="grid-template-columns:1fr 1fr;">
-          <div class="field"><label>Local timezone label</label><input id="tmplTzLabel"></div>
-          <div class="field"><label>UTC offset (hours)</label><input id="tmplUtcOffset" type="number" step="0.5"></div>
-        </div>
-        <div id="tmplFieldsT1" hidden class="field">
-          <label>facility_id for unassigned stations</label>
-          <div class="field-help">Set per-station below — this is just what's used if a station is left blank.</div>
-        </div>
-        <div id="tmplFieldsUnit" hidden class="field" style="max-width:160px;">
-          <label>unit_of_measurement</label>
-          <select id="tmplUnitOM"><option value="MWh">MWh</option><option value="kWh">kWh</option></select>
-        </div>
-        <div class="stations-modal-grid">
-          <div id="tmplStationFacilityWrap" hidden>
-            <label>Station → facility_id</label>
-            <div class="field-help" style="margin-bottom:6px;">Stations sharing the same facility_id have their hourly readings <strong>summed</strong> into one row per hour and land in the same output file. Leave a station blank to keep it as its own separate facility.</div>
-            <div class="table-scroll" style="max-height:340px;">
-              <table id="tmplStationFacilityTable"></table>
-            </div>
-          </div>
-          <div id="tmplFacilityGroupsWrap" hidden>
-            <label>Facility groups (Template 2 details)</label>
-            <div class="field-help" style="margin-bottom:6px;">One row per distinct facility_id entered above — meter_id defaults to the facility_id itself if left blank (matches your existing exports).</div>
-            <div class="table-scroll" style="max-height:340px;">
-              <table id="tmplFacilityGroupsTable"></table>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
         <div class="card-head"><h3>Jobs</h3></div>
         <div id="jobList"></div>
       </div>
@@ -333,7 +290,7 @@ tbody tr:last-child td{border-bottom:none;}
       <div class="card">
         <div class="card-head"><h3>Export Template 1 / 2</h3></div>
         <div class="callout">
-          Reads whatever's already in the <code>Readings</code> tab for a company's <strong>Hourly</strong> data — however it got there, a manual Extraction run, a multi-day quota-limited backfill, or months of nightly Daily-auto runs — and converts it to Template 1/2 for any date range you pick. Uses the same facility_id / meter_id / eac_registry_id settings already configured for this company (Dashboard → click the company → edit there, or the Extraction tab's Export format section).
+          Reads whatever's already in the <code>Readings</code> tab for a company's <strong>Hourly</strong> data — however it got there, a manual Extraction run, a multi-day quota-limited backfill, or months of nightly Daily-auto runs — and converts it to Template 1/2 for any date range you pick. Uses the same facility_id / meter_id / eac_registry_id settings already configured for this company — click it from the Dashboard to edit.
         </div>
         <div class="extraction-grid" style="grid-template-columns:1.4fr 1fr 1fr;">
           <div class="field">
@@ -401,6 +358,42 @@ tbody tr:last-child td{border-bottom:none;}
           This page can only run while it's open in a browser tab. For true unattended daily/hourly extraction, use the scheduled GitHub Action in <code>/.github/workflows/daily-extraction.yml</code> — it reads the same Google Sheet's <code>Connections</code> tab and writes to the same <code>Readings</code> tab, using its own copy of the service account credential (set as GitHub secrets). See <code>docs/SETUP.md</code>.
         </div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Subscription modal -->
+<div class="modal-overlay" id="subModalOverlay">
+  <div class="modal" style="max-width:420px;">
+    <div class="modal-top">
+      <h3 id="subModalTitle">Subscription</h3>
+      <button class="modal-close" id="btnSubModalClose">✕</button>
+    </div>
+    <div class="modal-sub">Automatic daily/monthly extraction, run by the scheduled GitHub Action</div>
+    <div class="callout">
+      Hourly is pulled day-by-day, every scheduled run, up to whichever is earlier: your end date, or yesterday. Monthly (if ticked) fires once, automatically, only after Hourly has fully caught up to the end date <em>and</em> that end date has actually passed.
+    </div>
+    <div class="field"><label><input type="checkbox" id="subHourly" style="width:auto;margin-right:8px;">Hourly</label></div>
+    <div class="field"><label><input type="checkbox" id="subMonthly" style="width:auto;margin-right:8px;">Monthly</label></div>
+    <div class="extraction-grid" style="grid-template-columns:1fr 1fr;">
+      <div class="field">
+        <label>Start date</label>
+        <div class="date-field-wrap">
+          <input type="text" id="subStart" class="date-input" placeholder="dd/mm/yyyy" readonly autocomplete="off">
+          <button type="button" class="date-picker-btn" data-target="subStart" aria-label="Open calendar">📅</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>End date</label>
+        <div class="date-field-wrap">
+          <input type="text" id="subEnd" class="date-input" placeholder="dd/mm/yyyy" readonly autocomplete="off">
+          <button type="button" class="date-picker-btn" data-target="subEnd" aria-label="Open calendar">📅</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="btnSubModalCancel">Cancel</button>
+      <button class="btn btn-primary" id="btnSubModalSave">Save</button>
     </div>
   </div>
 </div>
