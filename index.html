@@ -362,42 +362,6 @@ tbody tr:last-child td{border-bottom:none;}
   </div>
 </div>
 
-<!-- Subscription modal -->
-<div class="modal-overlay" id="subModalOverlay">
-  <div class="modal" style="max-width:420px;">
-    <div class="modal-top">
-      <h3 id="subModalTitle">Subscription</h3>
-      <button class="modal-close" id="btnSubModalClose">✕</button>
-    </div>
-    <div class="modal-sub">Automatic daily/monthly extraction, run by the scheduled GitHub Action</div>
-    <div class="callout">
-      Hourly is pulled day-by-day, every scheduled run, up to whichever is earlier: your end date, or yesterday. Monthly (if ticked) fires once, automatically, only after Hourly has fully caught up to the end date <em>and</em> that end date has actually passed.
-    </div>
-    <div class="field"><label><input type="checkbox" id="subHourly" style="width:auto;margin-right:8px;">Hourly</label></div>
-    <div class="field"><label><input type="checkbox" id="subMonthly" style="width:auto;margin-right:8px;">Monthly</label></div>
-    <div class="extraction-grid" style="grid-template-columns:1fr 1fr;">
-      <div class="field">
-        <label>Start date</label>
-        <div class="date-field-wrap">
-          <input type="text" id="subStart" class="date-input" placeholder="dd/mm/yyyy" readonly autocomplete="off">
-          <button type="button" class="date-picker-btn" data-target="subStart" aria-label="Open calendar">📅</button>
-        </div>
-      </div>
-      <div class="field">
-        <label>End date</label>
-        <div class="date-field-wrap">
-          <input type="text" id="subEnd" class="date-input" placeholder="dd/mm/yyyy" readonly autocomplete="off">
-          <button type="button" class="date-picker-btn" data-target="subEnd" aria-label="Open calendar">📅</button>
-        </div>
-      </div>
-    </div>
-    <div class="modal-actions">
-      <button class="btn" id="btnSubModalCancel">Cancel</button>
-      <button class="btn btn-primary" id="btnSubModalSave">Save</button>
-    </div>
-  </div>
-</div>
-
 <!-- Stations modal -->
 <div class="modal-overlay" id="stationsModalOverlay">
   <div class="modal" style="max-width:960px;">
@@ -424,6 +388,14 @@ tbody tr:last-child td{border-bottom:none;}
         </div>
       </div>
     </div>
+
+    <div style="margin-top:18px;">
+      <label style="display:block;font-size:.74rem;color:var(--muted);letter-spacing:.03em;margin-bottom:6px;">DATA STORED (in your Google Sheet's Readings tab)</label>
+      <div class="table-scroll" style="max-height:200px;">
+        <table id="stationsModalDataStoredTable"></table>
+      </div>
+    </div>
+
     <div class="modal-actions">
       <span id="stationsModalSavedNote" style="font-size:.82rem;color:var(--ok);margin-right:auto;"></span>
       <button class="btn btn-primary" id="btnStationsModalDone">Done</button>
