@@ -103,12 +103,14 @@ const App = (() => {
   }
 
   function cacheEls() {
-    ["dashboard", "extraction", "compare", "settings"].forEach(v => els[v] = qs(`view-${v}`));
+    ["dashboard", "extraction", "compare", "export", "settings"].forEach(v => els[v] = qs(`view-${v}`));
   }
 
   function wireStaticEvents() {
     DatePicker.attach(qs("extStart"));
     DatePicker.attach(qs("extEnd"));
+    DatePicker.attach(qs("expStart"));
+    DatePicker.attach(qs("expEnd"));
     qs("btnSignOut").addEventListener("click", handleSignOut);
     qs("authGateClientIdSave").addEventListener("click", () => {
       const id = qs("authGateClientIdInput").value.trim();
@@ -167,6 +169,7 @@ const App = (() => {
     });
     qs("btnRunCompare").addEventListener("click", handleRunCompare);
     qs("btnDownloadCompare").addEventListener("click", handleDownloadCompare);
+    qs("btnRunExport").addEventListener("click", handleRunExport);
   }
 
   function showView(view) {
@@ -175,6 +178,7 @@ const App = (() => {
     document.querySelectorAll(".nav-btn[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === view));
     if (view === "extraction") populateExtractionCompanySelect();
     if (view === "compare") populateCompareCompanySelect();
+    if (view === "export") populateExportCompanySelect();
   }
 
   /* ---------------------------- settings / connection status ---------------------------- */
@@ -629,6 +633,87 @@ const App = (() => {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "HourlyVsMonthly");
     XLSX.writeFile(wb, `${conn.companyName}_HourlyVsMonthly.xlsx`);
+  }
+
+  /* ---------------------------- export (Template 1/2 from stored Readings) ---------------------------- */
+
+  function populateExportCompanySelect() {
+    const sel = qs("expCompany");
+    sel.innerHTML = `<option value="">Select a company…</option>`;
+    connections.forEach(c => {
+      const opt = document.createElement("option");
+      opt.value = c.id; opt.textContent = `${c.companyName} (${BRANDS[c.brand].label})`;
+      sel.appendChild(opt);
+    });
+  }
+
+  async function handleRunExport() {
+    const id = qs("expCompany").value;
+    const conn = connections.find(c => c.id === id);
+    if (!conn) { alert("Pick a company first."); return; }
+    const settings = conn.templateSettings;
+    if (!settings || (settings.template !== "1" && settings.template !== "2")) {
+      alert(`${conn.companyName} isn't set up for Template export yet — open it from the Dashboard and set a Template + facility_id assignments first (or configure it in the Extraction tab's Export format section).`);
+      return;
+    }
+    const startDate = DatePicker.getISO(qs("expStart"));
+    const endDate = DatePicker.getISO(qs("expEnd"));
+    if (!startDate || !endDate) { alert("Pick a start and end date."); return; }
+
+    qs("btnRunExport").disabled = true;
+    qs("expStatus").textContent = "Reading Hourly rows from your Google Sheet…";
+    qs("expResultsCard").hidden = true;
+
+    try {
+      const readings = await SheetsClient.listReadings(conn.companyName);
+      const brandKey = conn.brand;
+      const utcOffset = settings.utcOffset ?? 8;
+      const filtered = readings.filter(r => {
+        if (r.resolution !== "Hourly") return false;
+        const wc = TemplateExport.wallClockFromRow(r, brandKey, utcOffset);
+        if (!wc) return false;
+        const localDate = `${wc.y}-${String(wc.mo).padStart(2, "0")}-${String(wc.d).padStart(2, "0")}`;
+        return localDate >= startDate && localDate <= endDate;
+      });
+      const groups = TemplateExport.build(filtered, brandKey, settings);
+      renderExportResults(conn, settings, groups, filtered.length);
+      qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.`;
+    } catch (e) {
+      qs("expStatus").textContent = `Failed: ${e.message}`;
+    }
+    qs("btnRunExport").disabled = false;
+  }
+
+  function renderExportResults(conn, settings, groups, rowCount) {
+    qs("expResultsCard").hidden = false;
+    qs("expSummary").innerHTML = groups.length
+      ? `${rowCount} hourly row(s) in range, grouped into <strong>${groups.length}</strong> facility file(s).`
+      : `No hourly rows found in that date range for this company.`;
+
+    const list = qs("expFacilityList");
+    list.innerHTML = "";
+    groups.forEach(g => {
+      const row = document.createElement("div");
+      row.className = "export-facility-row";
+      row.innerHTML = `
+        <div>
+          <div style="font-weight:600;">${escapeHtml(g.facilityId)}</div>
+          <div class="meta">${g.rows.length} row(s) · Template ${escapeHtml(settings.template)}</div>
+        </div>
+        <button class="btn btn-primary" data-facility="${escapeHtml(g.facilityId)}">Download</button>`;
+      row.querySelector("button").addEventListener("click", () => downloadExportFacility(conn, settings, g));
+      list.appendChild(row);
+    });
+  }
+
+  function downloadExportFacility(conn, settings, group) {
+    const sheetName = settings.template === "1" ? "Data" : "MeterData";
+    const filenameSuffix = settings.template === "1" ? "template_1" : "template_2";
+    const ws = XLSX.utils.aoa_to_sheet([group.headers, ...group.rows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+    const safeFacility = group.facilityId.replace(/[^a-z0-9_-]+/gi, "_");
+    XLSX.writeFile(wb, `${conn.companyName}_${safeFacility}_export_${filenameSuffix}.xlsx`);
   }
 
   async function handleExtractionCompanyChange() {
