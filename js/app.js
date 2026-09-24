@@ -149,6 +149,7 @@ const App = (() => {
     qs("btnSaveSettings").addEventListener("click", handleSaveSettings);
     qs("btnQueueExtraction").addEventListener("click", handleQueueExtraction);
     qs("extCompany").addEventListener("change", handleExtractionCompanyChange);
+    qs("extResolution").addEventListener("change", suggestStartDateFromCursor);
     qs("btnRunCompare").addEventListener("click", handleRunCompare);
     qs("btnDownloadCompare").addEventListener("click", handleDownloadCompare);
     qs("btnRunExport").addEventListener("click", handleRunExport);
@@ -158,7 +159,7 @@ const App = (() => {
     currentView = view;
     Object.entries(els).forEach(([k, el]) => el.classList.toggle("active", k === view));
     document.querySelectorAll(".nav-btn[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === view));
-    if (view === "extraction") populateExtractionCompanySelect();
+    if (view === "extraction") { populateExtractionCompanySelect(); renderPersistedPendingJobs(); }
     if (view === "compare") populateCompareCompanySelect();
     if (view === "export") populateExportCompanySelect();
   }
@@ -736,7 +737,22 @@ const App = (() => {
     if (!conn.stations?.length) {
       stationBox.innerHTML = `<div class="field-help">No stations cached yet — re-run "Test & Connect" on this company to fetch the station list.</div>`;
     }
-    loadTemplateSettingsIntoForm(conn);
+    suggestStartDateFromCursor();
+  }
+
+  // Pre-fills Start Date with wherever this company+resolution last left off,
+  // as a convenience default — purely a suggestion, never a hidden override.
+  // Typing a different date (e.g. an earlier one, to backfill) is fully
+  // respected; nothing silently resumes from the cursor instead anymore.
+  function suggestStartDateFromCursor() {
+    const id = qs("extCompany").value;
+    const conn = connections.find(c => c.id === id);
+    if (!conn) return;
+    const resolution = qs("extResolution").value;
+    const cursorDate = conn.cursor?.[resolution];
+    if (cursorDate && !DatePicker.getISO(qs("extStart"))) {
+      DatePicker.setFromISO(qs("extStart"), cursorDate);
+    }
   }
 
   // A global queue so that clicking "Queue extraction" for a second company
@@ -779,7 +795,12 @@ const App = (() => {
       alert("End date can't be in the future — data for days that haven't happened yet doesn't exist. Pick today or an earlier date.");
       return;
     }
+    queueExtractionJob(conn, resolution, stationIds, startDate, endDate);
+  }
 
+  // Shared by both "Queue extraction" (fresh, from the form) and "Resume"
+  // (reconstructed from a persisted pendingJob, no form re-entry needed).
+  function queueExtractionJob(conn, resolution, stationIds, startDate, endDate) {
     const brand = BRANDS[conn.brand];
 
     // Created immediately so it shows up in the Jobs list right away, even
@@ -795,6 +816,15 @@ const App = (() => {
       connection: conn, brand: conn.brand, resolution, startDate, endDate, stationIds,
       onProgress: (j) => renderJobProgress(jobRow, j, startDate, endDate),
     });
+    liveJobKeys.add(`${conn.id}|${resolution}`); // so a persisted "Resume" card for the same job doesn't also render
+
+    // Remember this as unfinished right away — saved to the Sheet, not just
+    // in memory — so if the tab gets closed mid-run (or it just pauses on
+    // quota), the NEXT time this company's shown, a "Resume" card appears
+    // instead of the info being lost.
+    conn.pendingJob = conn.pendingJob || {};
+    conn.pendingJob[resolution] = { stationIds, startDate, endDate };
+    SheetsClient.saveConnection(conn).catch(() => {});
 
     const cancelBtn = document.createElement("button");
     cancelBtn.className = "btn btn-ghost job-cancel";
@@ -840,10 +870,45 @@ const App = (() => {
         }
       }
       conn.cursor = job.connection.cursor;
+      if (job.status === "done") {
+        delete conn.pendingJob[resolution]; // fully caught up — nothing left to resume
+      }
       await SheetsClient.saveConnection(conn).catch(() => {});
       job._downloadRows = job.rowsCollected;
       jobRow._job = job;
     });
+  }
+
+  // Companies with a saved pendingJob (paused/cancelled/tab-closed in a
+  // previous session) get a "Resume" card here — same Jobs list, no form
+  // re-entry needed. Skips anything already shown live this session.
+  const liveJobKeys = new Set();
+
+  function renderPersistedPendingJobs() {
+    for (const conn of connections) {
+      if (!conn.pendingJob) continue;
+      for (const [resolution, pending] of Object.entries(conn.pendingJob)) {
+        const key = `${conn.id}|${resolution}`;
+        if (liveJobKeys.has(key)) continue;
+        liveJobKeys.add(key);
+
+        const effectiveStart = conn.cursor?.[resolution] || pending.startDate;
+        const jobRow = document.createElement("div");
+        jobRow.className = "job-row";
+        jobRow.innerHTML = `<div class="job-title">${escapeHtml(conn.companyName)} · ${resolution} · ${pending.startDate} → ${pending.endDate}</div>
+          <div class="job-bar"><div class="job-bar-fill"></div></div>
+          <div class="job-status">Unfinished from a previous session — currently caught up to ${escapeHtml(effectiveStart)}.</div>`;
+        const resumeBtn = document.createElement("button");
+        resumeBtn.className = "btn btn-primary";
+        resumeBtn.textContent = "Resume";
+        resumeBtn.addEventListener("click", () => {
+          jobRow.remove();
+          queueExtractionJob(conn, resolution, pending.stationIds, effectiveStart, pending.endDate);
+        });
+        jobRow.appendChild(resumeBtn);
+        qs("jobList").appendChild(jobRow);
+      }
+    }
   }
 
   function renderJobProgress(jobRow, job, startDate, endDate) {
