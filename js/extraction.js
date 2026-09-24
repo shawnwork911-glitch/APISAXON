@@ -21,11 +21,16 @@ const ExtractionEngine = (() => {
       rowsCollected: [],
       error: null,
       onProgress: onProgress || (() => {}),
-      cursorDate: connection.cursor?.[resolution] || startDate,
+      cursorDate: startDate, // always exactly what was requested — see note below
     };
     jobs.set(id, job);
     return job;
   }
+  // NOTE: cursorDate used to silently fall back to connection.cursor[resolution]
+  // when one existed, meaning a wider/earlier startDate typed by the user could
+  // get silently overridden and never actually fetched. Now the typed startDate
+  // is always honored — the cursor is only ever used as a pre-filled suggestion
+  // in the UI (see app.js), not a hidden override here.
 
   function getJob(id) { return jobs.get(id); }
   function pause(id) { const j = jobs.get(id); if (j && j.status === "running") j.status = "paused"; }
@@ -39,32 +44,56 @@ const ExtractionEngine = (() => {
     const quota = brandDef.quota;
 
     try {
-      // FusionSolar/etc: iterate date range day-by-day (or per-bucket) so we can
-      // check the quota and persist a cursor between every single API call.
-      const allCursorPoints = buildCursorPoints(job.brand, job.resolution, job.cursorDate, job.endDate);
-
-      for (const point of allCursorPoints) {
-        if (job.status !== "running") break; // paused or stopped
-        if (job.callsMadeToday >= quota.perDay) {
+      if (job.brand === "solaredge") {
+        // SolarEdge's fetchSeries already accepts the full date range and
+        // chunks internally per brands.js's maxWindowDays — this needs
+        // exactly one call covering job.cursorDate → job.endDate. (Bug fixed
+        // here: this used to pass the end date as BOTH the start and end,
+        // so only the very last day ever actually got requested.)
+        if (job.callsMadeToday < quota.perDay) {
+          const rows = await brandDef.fetchSeries(ctx, {
+            stationIds: job.stationIds, resolution: job.resolution,
+            startDate: job.cursorDate, endDate: job.endDate,
+          });
+          job.rowsCollected.push(...rows);
+          job.callsMadeToday += 1;
+          job.cursorDate = job.endDate;
+          job.connection.cursor = job.connection.cursor || {};
+          job.connection.cursor[job.resolution] = job.endDate;
+          job.onProgress(job);
+        } else {
           job.status = "paused";
           job.pausedReason = "quota";
           job.onProgress(job);
-          break;
         }
+      } else {
+        // FusionSolar/etc: iterate date range day-by-day (or per-bucket) so we can
+        // check the quota and persist a cursor between every single API call.
+        const allCursorPoints = buildCursorPoints(job.brand, job.resolution, job.cursorDate, job.endDate);
 
-        const rows = await brandDef.fetchSeries(ctx, {
-          stationIds: job.stationIds,
-          resolution: job.resolution,
-          startDate: point, endDate: point,
-        });
-        job.rowsCollected.push(...rows);
-        job.callsMadeToday += 1;
-        job.cursorDate = point;
-        job.connection.cursor = job.connection.cursor || {};
-        job.connection.cursor[job.resolution] = point;
-        job.onProgress(job);
+        for (const point of allCursorPoints) {
+          if (job.status !== "running") break; // paused or stopped
+          if (job.callsMadeToday >= quota.perDay) {
+            job.status = "paused";
+            job.pausedReason = "quota";
+            job.onProgress(job);
+            break;
+          }
 
-        if (quota.callDelayMs) await sleep(quota.callDelayMs);
+          const rows = await brandDef.fetchSeries(ctx, {
+            stationIds: job.stationIds,
+            resolution: job.resolution,
+            startDate: point, endDate: point,
+          });
+          job.rowsCollected.push(...rows);
+          job.callsMadeToday += 1;
+          job.cursorDate = point;
+          job.connection.cursor = job.connection.cursor || {};
+          job.connection.cursor[job.resolution] = point;
+          job.onProgress(job);
+
+          if (quota.callDelayMs) await sleep(quota.callDelayMs);
+        }
       }
 
       if (job.status === "running") job.status = "done";
@@ -81,10 +110,10 @@ const ExtractionEngine = (() => {
     return job;
   }
 
-  // For brands whose fetchSeries already accepts a full range in one call
-  // (SolarEdge), we just run once per contiguous chunk rather than per-day.
+  // Day/month iteration for brands whose fetchSeries takes one bucket at a
+  // time (FusionSolar) — SolarEdge is handled separately above, since its
+  // fetchSeries takes the whole range in one call instead.
   function buildCursorPoints(brandKey, resolution, startDate, endDate) {
-    if (brandKey === "solaredge") return [endDate]; // single call handles the whole range + internal chunking
     const start = new Date(startDate), end = new Date(endDate);
     const points = [];
     const step = resolution === "Monthly" ? "month" : "day";
