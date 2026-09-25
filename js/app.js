@@ -153,6 +153,7 @@ const App = (() => {
     qs("btnRunCompare").addEventListener("click", handleRunCompare);
     qs("btnDownloadCompare").addEventListener("click", handleDownloadCompare);
     qs("btnRunExport").addEventListener("click", handleRunExport);
+    qs("btnResumeAll").addEventListener("click", handleResumeAll);
     qs("expResolution").addEventListener("change", syncExportFieldVisibility);
   }
 
@@ -957,6 +958,10 @@ const App = (() => {
   // re-entry needed. Skips anything already shown live this session.
   const liveJobKeys = new Set();
 
+  // Tracks every currently-rendered "Resume" card's action, so "Resume all"
+  // can trigger them in one click instead of clicking each individually.
+  const pendingResumeActions = [];
+
   function renderPersistedPendingJobs() {
     for (const conn of connections) {
       if (!conn.pendingJob) continue;
@@ -971,17 +976,31 @@ const App = (() => {
         jobRow.innerHTML = `<div class="job-title">${escapeHtml(conn.companyName)} · ${resolution} · ${pending.startDate} → ${pending.endDate}</div>
           <div class="job-bar"><div class="job-bar-fill"></div></div>
           <div class="job-status">Unfinished from a previous session — currently caught up to ${escapeHtml(effectiveStart)}.</div>`;
+        const resumeThis = () => {
+          const idx = pendingResumeActions.indexOf(resumeThis);
+          if (idx !== -1) pendingResumeActions.splice(idx, 1);
+          qs("btnResumeAll").hidden = pendingResumeActions.length === 0;
+          jobRow.remove();
+          queueExtractionJob(conn, resolution, pending.stationIds, effectiveStart, pending.endDate);
+        };
         const resumeBtn = document.createElement("button");
         resumeBtn.className = "btn btn-primary";
         resumeBtn.textContent = "Resume";
-        resumeBtn.addEventListener("click", () => {
-          jobRow.remove();
-          queueExtractionJob(conn, resolution, pending.stationIds, effectiveStart, pending.endDate);
-        });
+        resumeBtn.addEventListener("click", resumeThis);
         jobRow.appendChild(resumeBtn);
         qs("jobList").appendChild(jobRow);
+        pendingResumeActions.push(resumeThis);
       }
     }
+    qs("btnResumeAll").hidden = pendingResumeActions.length === 0;
+  }
+
+  function handleResumeAll() {
+    // Snapshot first — each resumeThis() call removes its own row and enqueues
+    // a real job, which shouldn't affect the ones still waiting to be triggered.
+    const actions = pendingResumeActions.splice(0, pendingResumeActions.length);
+    actions.forEach(fn => fn());
+    qs("btnResumeAll").hidden = true;
   }
 
   function renderJobProgress(jobRow, job, startDate, endDate) {
