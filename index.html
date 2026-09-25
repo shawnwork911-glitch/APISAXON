@@ -3,8 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Saxon SolarLink Connect</title>
-<link rel="shortcut icon" type="image/x-icon" href="favicon.ico">
+<title>SolarLink Connect — Multi-Brand Inverter API Extraction</title>
 <style>
 :root{
   --bg:#0d1117; --panel:#141a24; --panel2:#1a212c; --line:#242c38;
@@ -252,7 +251,10 @@ tbody tr:last-child td{border-bottom:none;}
       </div>
 
       <div class="card">
-        <div class="card-head"><h3>Jobs</h3></div>
+        <div class="card-head">
+          <h3>Jobs</h3>
+          <button class="btn btn-primary" id="btnResumeAll" hidden>Resume all</button>
+        </div>
         <div id="jobList"></div>
       </div>
     </div>
