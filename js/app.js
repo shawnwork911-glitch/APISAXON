@@ -705,7 +705,7 @@ const App = (() => {
         baseSettings.template = qs("expTemplate").value;
         const utcOffset = baseSettings.utcOffset ?? 8;
         const filtered = readings.filter(r => {
-          if (r.resolution !== "Hourly") return false;
+          if (String(r.resolution).trim() !== "Hourly") return false;
           const wc = TemplateExport.wallClockFromRow(r, brandKey, utcOffset);
           if (!wc) return false;
           const localDate = `${wc.y}-${String(wc.mo).padStart(2, "0")}-${String(wc.d).padStart(2, "0")}`;
@@ -713,12 +713,12 @@ const App = (() => {
         });
         const groups = TemplateExport.build(filtered, brandKey, baseSettings);
         renderExportResults(conn, { resolution, template: baseSettings.template }, groups, filtered.length, "Hourly");
-        qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.`;
+        qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.` + (filtered.length ? "" : exportDiagnostic(readings, resolution, brandKey, conn.templateSettings?.utcOffset ?? 8, startDate, endDate));
       } else {
         const settingsForFacility = conn.templateSettings || {};
         const startMonth = `${startDate.slice(0, 7)}-01`;
         const filtered = readings.filter(r => {
-          if (r.resolution !== "Monthly") return false;
+          if (String(r.resolution).trim() !== "Monthly") return false;
           const wc = TemplateExport.wallClockFromRow(r, brandKey, settingsForFacility.utcOffset ?? 8);
           if (!wc) return false;
           const rowMonth = `${wc.y}-${String(wc.mo).padStart(2, "0")}-01`;
@@ -726,7 +726,7 @@ const App = (() => {
         });
         const groups = buildMonthlyExportGroups(filtered, brandKey, settingsForFacility);
         renderExportResults(conn, { resolution, template: null }, groups, filtered.length, "Monthly");
-        qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.`;
+        qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.` + (filtered.length ? "" : exportDiagnostic(readings, resolution, brandKey, conn.templateSettings?.utcOffset ?? 8, startDate, endDate));
       }
     } catch (e) {
       qs("expStatus").textContent = `Failed: ${e.message}`;
@@ -1062,20 +1062,43 @@ const App = (() => {
   // and verifies the round-trip so no row is ever shifted by the wrong offset.
   function normalizeReadingsForTemplates(readings, brandKey, utcOffset) {
     const off = utcOffset ?? 8;
+    // A wall-clock result only counts if every field is a real number AND it
+    // lands on the same date/hour as the readable string. (A NaN-filled object
+    // is truthy, so a plain truthiness check would wrongly accept it.)
+    const matches = (wc, p) => !!wc && [wc.y, wc.mo, wc.d, wc.H].every(Number.isFinite)
+      && (!p || (wc.y === p.y && wc.mo === p.mo && wc.d === p.d && wc.H === p.H));
     return readings.map(r => {
       const row = { ...r, kwh: r.kwh === "" || r.kwh == null ? r.kwh : Number(r.kwh) };
-      if (TemplateExport.wallClockFromRow(row, brandKey, off)) return row; // already understood (e.g. SolarEdge, or old epoch rows)
       const m = String(r.timestamp).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
-      if (!m) return row;
+      if (!m) return matches(safeWallClock(row, brandKey, off)) ? row : row; // old epoch rows etc. — leave as-is
       const [y, mo, d, H, Mi, S] = [m[1], m[2], m[3], m[4], m[5], m[6] || "0"].map(Number);
+      const parsed = { y, mo, d, H };
+      if (matches(safeWallClock(row, brandKey, off), parsed)) return row; // e.g. SolarEdge: string is native
       const epoch = Date.UTC(y, mo - 1, d, H, Mi, S) - off * 3600000; // local wall clock -> UTC epoch
-      for (const candidate of [epoch, String(epoch)]) {
-        const test = { ...row, timestamp: candidate };
-        const wc = TemplateExport.wallClockFromRow(test, brandKey, off);
-        if (wc && wc.y === y && wc.mo === mo && wc.d === d && wc.H === H) return test;
+      for (const candidate of [epoch, String(epoch), Math.floor(epoch / 1000)]) {
+        const test = { ...row, timestamp: candidate, collectTime: candidate };
+        if (matches(safeWallClock(test, brandKey, off), parsed)) return test;
       }
       return row;
     });
+  }
+
+  function safeWallClock(row, brandKey, off) {
+    try { return TemplateExport.wallClockFromRow(row, brandKey, off); } catch { return null; }
+  }
+
+  // Shown in the status line only when rows exist but none land in range,
+  // so the cause is visible on screen instead of a bare "0 in range".
+  function exportDiagnostic(readings, resolution, brandKey, off, startDate, endDate) {
+    const same = readings.filter(r => String(r.resolution).trim() === resolution);
+    if (!same.length) {
+      const seen = [...new Set(readings.map(r => JSON.stringify(r.resolution)))].slice(0, 5).join(", ");
+      return ` No rows with resolution "${resolution}" — values seen: ${seen || "none"}.`;
+    }
+    const s = same[0];
+    const wc = safeWallClock(s, brandKey, off);
+    return ` Range ${startDate} → ${endDate}. Sample row timestamp ${JSON.stringify(s.timestamp)} (${typeof s.timestamp})`
+      + ` parsed as ${wc ? JSON.stringify({ y: wc.y, mo: wc.mo, d: wc.d, H: wc.H }) : "null"}.`;
   }
 
   function formatReadableTimestamp(row, brandKey, utcOffset) {
