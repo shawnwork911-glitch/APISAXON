@@ -687,6 +687,7 @@ const App = (() => {
     const startDate = DatePicker.getISO(qs("expStart"));
     const endDate = DatePicker.getISO(qs("expEnd"));
     if (!startDate || !endDate) { alert("Pick a start and end date."); return; }
+    if (endDate < startDate) { alert(`End date (${endDate}) is before start date (${startDate}) — please fix the range.`); return; }
 
     qs("btnRunExport").disabled = true;
     qs("expStatus").textContent = `Reading ${resolution} rows from your Google Sheet…`;
