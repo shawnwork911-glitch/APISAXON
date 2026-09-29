@@ -604,7 +604,8 @@ const App = (() => {
     qs("cmpResultsCard").hidden = true;
 
     try {
-      const readings = await SheetsClient.listReadings(conn.companyName);
+      const readings = normalizeReadingsForTemplates(
+        await SheetsClient.listReadings(conn.companyName), conn.brand, conn.templateSettings?.utcOffset);
       const result = CompareEngine.compareHourlyVsMonthly(readings, conn);
       lastCompareResult = { conn, result };
       renderCompareResults(conn, result);
@@ -692,8 +693,9 @@ const App = (() => {
     qs("expResultsCard").hidden = true;
 
     try {
-      const readings = await SheetsClient.listReadings(conn.companyName);
+      const rawReadings = await SheetsClient.listReadings(conn.companyName);
       const brandKey = conn.brand;
+      const readings = normalizeReadingsForTemplates(rawReadings, brandKey, conn.templateSettings?.utcOffset);
 
       if (resolution === "Hourly") {
         // Facility mapping (station→facility_id, meter_id, eac_registry_id) still
@@ -1051,6 +1053,31 @@ const App = (() => {
   // This makes both consistent: a plain "YYYY-MM-DD HH:MM:SS" local string,
   // reusing the exact same brand-aware wall-clock logic already verified
   // correct in Template exports.
+  // Rows are written to the Sheet with a readable "YYYY-MM-DD HH:MM:SS"
+  // local-time timestamp (see formatReadableTimestamp). But
+  // TemplateExport.wallClockFromRow expects each brand's RAW API timestamp —
+  // for FusionSolar that's an epoch number — so for readable-string rows it
+  // returns null and every row gets silently dropped from Export/Compare.
+  // This converts readable rows back into a form wallClockFromRow accepts,
+  // and verifies the round-trip so no row is ever shifted by the wrong offset.
+  function normalizeReadingsForTemplates(readings, brandKey, utcOffset) {
+    const off = utcOffset ?? 8;
+    return readings.map(r => {
+      const row = { ...r, kwh: r.kwh === "" || r.kwh == null ? r.kwh : Number(r.kwh) };
+      if (TemplateExport.wallClockFromRow(row, brandKey, off)) return row; // already understood (e.g. SolarEdge, or old epoch rows)
+      const m = String(r.timestamp).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+      if (!m) return row;
+      const [y, mo, d, H, Mi, S] = [m[1], m[2], m[3], m[4], m[5], m[6] || "0"].map(Number);
+      const epoch = Date.UTC(y, mo - 1, d, H, Mi, S) - off * 3600000; // local wall clock -> UTC epoch
+      for (const candidate of [epoch, String(epoch)]) {
+        const test = { ...row, timestamp: candidate };
+        const wc = TemplateExport.wallClockFromRow(test, brandKey, off);
+        if (wc && wc.y === y && wc.mo === mo && wc.d === d && wc.H === H) return test;
+      }
+      return row;
+    });
+  }
+
   function formatReadableTimestamp(row, brandKey, utcOffset) {
     const wc = TemplateExport.wallClockFromRow(row, brandKey, utcOffset ?? 8);
     if (!wc) return String(row.timestamp);
