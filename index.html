@@ -108,6 +108,14 @@ body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;backgroun
 .date-picker-grid .day.muted{color:var(--muted);opacity:.45;}
 .date-picker-grid .day.today{border:1px solid var(--accent);}
 .date-picker-grid .day.selected{background:var(--accent);color:var(--accent-ink);font-weight:700;}
+.audit-action{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.72rem;font-weight:600;white-space:nowrap;background:#223044;color:#c9d3e0;}
+.audit-action[data-kind="extract"]{background:rgba(229,151,42,.16);color:var(--accent);}
+.audit-action[data-kind="export"]{background:rgba(47,174,102,.16);color:var(--ok);}
+.audit-action[data-kind="compare"]{background:rgba(99,151,229,.16);color:#7fb0f0;}
+.audit-action[data-kind="company"]{background:rgba(170,120,230,.16);color:#c3a0f0;}
+.audit-action[data-kind="settings"]{background:rgba(217,154,43,.12);color:var(--warn);}
+.audit-action[data-kind="danger"]{background:rgba(217,75,75,.16);color:var(--err);}
+#auditTable td{vertical-align:top;}
 .field-help{font-size:.72rem;color:var(--muted);margin-top:4px;}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
 
@@ -177,7 +185,8 @@ tbody tr:last-child td{border-bottom:none;}
     <button class="nav-btn" data-view="compare">⇄ Compare</button>
     <button class="nav-btn" data-view="export">⤓ Export</button>
     <div class="nav-group-label">SYSTEM</div>
-    <button class="nav-btn" data-view="settings">⚙ Settings</button>
+    <button class="nav-btn" data-view="audit" id="navAudit" hidden>☰ Audit Log</button>
+    <button class="nav-btn" data-view="settings">🔒 Settings</button>
   </div>
 
   <div class="main">
@@ -343,8 +352,35 @@ tbody tr:last-child td{border-bottom:none;}
       </div>
     </div>
 
+    <!-- AUDIT LOG -->
+    <div class="view" id="view-audit">
+      <div class="card">
+        <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+          <h3>Audit log</h3>
+          <div style="display:flex;gap:8px;">
+            <button class="btn" id="btnAuditRefresh">Refresh</button>
+            <button class="btn btn-primary" id="btnAuditDownload">Download Excel</button>
+          </div>
+        </div>
+        <div class="callout">
+          Every sign-in, data extraction, comparison, company added/removed/edited, export built/downloaded, and Settings unlock/save — who did it and when. Stored in the <code>Audit</code> tab of your Google Sheet.
+        </div>
+        <div class="extraction-grid" style="grid-template-columns:1fr 1fr 1.4fr;">
+          <div class="field"><label>User</label><select id="auditFilterUser"><option value="">All users</option></select></div>
+          <div class="field"><label>Action</label><select id="auditFilterAction"><option value="">All actions</option></select></div>
+          <div class="field"><label>Search company / details</label><input id="auditFilterText" placeholder="e.g. Ding Fu, GEN3228, Template 2"></div>
+        </div>
+        <div id="auditStatus" class="field-help" style="margin:10px 0;"></div>
+        <div class="table-scroll" style="max-height:620px;"><table id="auditTable"></table></div>
+      </div>
+    </div>
+
     <!-- SETTINGS -->
     <div class="view" id="view-settings">
+      <div class="callout warn" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:0;">
+        <span>🔓 Settings are unlocked. Changes here affect everyone using this browser's connection to the proxy and Sheet — every save is recorded in the audit log.</span>
+        <button class="btn" id="btnSettingsRelock" style="flex-shrink:0;">Lock settings</button>
+      </div>
       <div class="card">
         <div class="card-head"><h3>CORS proxy</h3></div>
         <div class="callout">
@@ -421,6 +457,23 @@ tbody tr:last-child td{border-bottom:none;}
   </div>
 </div>
 
+<!-- Settings password lock -->
+<div class="modal-overlay" id="settingsLockOverlay" style="z-index:60;">
+  <div class="modal" style="max-width:380px;margin-top:12vh;">
+    <div class="modal-top">
+      <h3>🔒 Settings locked</h3>
+      <button class="modal-close" id="btnSettingsLockClose">✕</button>
+    </div>
+    <div class="modal-sub">ENTER PASSWORD TO OPEN SETTINGS</div>
+    <div class="field"><label>Password</label><input id="settingsPasswordInput" type="password" autocomplete="off"></div>
+    <div id="settingsLockError" style="font-size:.8rem;color:var(--err);min-height:1.2em;"></div>
+    <div class="modal-actions">
+      <button class="btn" id="btnSettingsLockCancel">Cancel</button>
+      <button class="btn btn-primary" id="btnSettingsUnlock">Unlock</button>
+    </div>
+  </div>
+</div>
+
 <!-- Add Company modal -->
 <div class="modal-overlay" id="modalOverlay">
   <div class="modal">
@@ -444,15 +497,15 @@ tbody tr:last-child td{border-bottom:none;}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client"></script>
-<script src="js/brands.js?v=20260929b"></script>
-<script src="js/signing.js?v=20260929b"></script>
-<script src="js/auth-client.js?v=20260929b"></script>
-<script src="js/proxy-client.js?v=20260929b"></script>
-<script src="js/datepicker.js?v=20260929b"></script>
-<script src="js/sheets-client.js?v=20260929b"></script>
-<script src="js/templates.js?v=20260929b"></script>
-<script src="js/compare.js?v=20260929b"></script>
-<script src="js/extraction.js?v=20260929b"></script>
-<script src="js/app.js?v=20260929b"></script>
+<script src="js/brands.js?v=20260929d"></script>
+<script src="js/signing.js?v=20260929d"></script>
+<script src="js/auth-client.js?v=20260929d"></script>
+<script src="js/proxy-client.js?v=20260929d"></script>
+<script src="js/datepicker.js?v=20260929d"></script>
+<script src="js/sheets-client.js?v=20260929d"></script>
+<script src="js/templates.js?v=20260929d"></script>
+<script src="js/compare.js?v=20260929d"></script>
+<script src="js/extraction.js?v=20260929d"></script>
+<script src="js/app.js?v=20260929d"></script>
 </body>
 </html>
