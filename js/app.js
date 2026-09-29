@@ -18,6 +18,9 @@ const App = (() => {
   let currentView = "dashboard";
   let pendingBrand = null;   // brand selected inside Add Company modal
   let currentRole = null;    // "Admin" | "User" — set once whoAmI() succeeds
+  let currentEmail = null;   // signed-in user's email — stamped on every audit entry
+  let settingsUnlocked = false; // Settings tab is password-locked; re-locks whenever you leave it
+  let stationsModalDirty = false;
 
   const els = {};
 
@@ -76,8 +79,11 @@ const App = (() => {
     try {
       const who = await SheetsClient.whoAmI();
       currentRole = who.role;
+      currentEmail = who.email;
       qs("authGateOverlay").classList.remove("active");
       qs("authUserLabel").textContent = `${who.email} · ${who.role}`;
+      qs("navAudit").hidden = who.role !== "Admin";
+      Audit.log("Sign in", "", `Role: ${who.role}`);
       await afterSignedIn();
     } catch (e) {
       AuthClient.signOut();
@@ -98,12 +104,14 @@ const App = (() => {
   }
 
   function handleSignOut() {
+    Audit.log("Sign out", "", "");
+    currentEmail = null;
     AuthClient.signOut();
     location.reload(); // simplest reliable way back to a clean, gated state
   }
 
   function cacheEls() {
-    ["dashboard", "extraction", "compare", "export", "settings"].forEach(v => els[v] = qs(`view-${v}`));
+    ["dashboard", "extraction", "compare", "export", "settings", "audit"].forEach(v => els[v] = qs(`view-${v}`));
   }
 
   function wireStaticEvents() {
@@ -122,6 +130,14 @@ const App = (() => {
     document.querySelectorAll(".nav-btn[data-view]").forEach(btn => {
       btn.addEventListener("click", () => showView(btn.dataset.view));
     });
+    qs("btnSettingsUnlock").addEventListener("click", handleSettingsUnlock);
+    qs("settingsPasswordInput").addEventListener("keydown", (e) => { if (e.key === "Enter") handleSettingsUnlock(); });
+    qs("btnSettingsLockCancel").addEventListener("click", closeSettingsLock);
+    qs("btnSettingsLockClose").addEventListener("click", closeSettingsLock);
+    qs("btnSettingsRelock").addEventListener("click", () => { settingsUnlocked = false; Audit.log("Settings locked", "", ""); showView("dashboard"); });
+    qs("btnAuditRefresh").addEventListener("click", loadAuditLog);
+    qs("btnAuditDownload").addEventListener("click", downloadAuditLog);
+    ["auditFilterUser", "auditFilterAction", "auditFilterText"].forEach(id => qs(id).addEventListener("input", renderAuditTable));
     qs("btnAddCompany").addEventListener("click", openAddCompanyModal);
     qs("btnModalClose").addEventListener("click", closeAddCompanyModal);
     qs("btnStationsModalClose").addEventListener("click", closeStationsModal);
@@ -158,12 +174,16 @@ const App = (() => {
   }
 
   function showView(view) {
+    if (view === "settings" && !settingsUnlocked) { openSettingsLock(); return; }
+    if (view === "audit" && currentRole !== "Admin") { alert("Only Admins can view the audit log."); return; }
+    if (currentView === "settings" && view !== "settings") settingsUnlocked = false; // leaving Settings re-locks it
     currentView = view;
     Object.entries(els).forEach(([k, el]) => el.classList.toggle("active", k === view));
     document.querySelectorAll(".nav-btn[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === view));
     if (view === "extraction") { populateExtractionCompanySelect(); renderPersistedPendingJobs(); }
     if (view === "compare") populateCompareCompanySelect();
     if (view === "export") { populateExportCompanySelect(); syncExportFieldVisibility(); }
+    if (view === "audit") loadAuditLog();
   }
 
   /* ---------------------------- settings / connection status ---------------------------- */
@@ -188,6 +208,7 @@ const App = (() => {
     AuthClient.saveClientId(newClientId);
     updateConnectionBanner();
     qs("settingsSavedNote").textContent = "Saved.";
+    Audit.log("Settings saved", "", `Proxy: ${qs("cfgProxyUrl").value.trim() || "(blank)"} · Sheet ID: ${qs("cfgSpreadsheetId").value.trim() || "(blank)"}${clientIdChanged ? " · Sign-in Client ID changed" : ""}`);
     qs("settingsSavedNote").style.color = "var(--ok)";
     if (SheetsClient.isConfigured()) {
       try {
@@ -267,6 +288,7 @@ const App = (() => {
     const conn = connections.find(c => c.id === connId);
     if (!conn) return;
     stationsModalConnId = connId;
+    stationsModalDirty = false;
     const brand = BRANDS[conn.brand];
     qs("stationsModalTitle").innerHTML = `<span class="badge" style="background:${brand.color};display:inline-flex;width:26px;height:26px;font-size:.62rem;vertical-align:middle;margin-right:8px;">${brand.badge}</span>${escapeHtml(conn.companyName)}`;
 
@@ -401,6 +423,7 @@ const App = (() => {
     try {
       await SheetsClient.saveConnection(conn);
       qs("stationsModalSavedNote").textContent = "Saved.";
+      stationsModalDirty = true;
       // Keep the Extraction tab's own working copy in sync if it's currently
       // showing this same company, so switching tabs doesn't show stale data.
       if (qs("extCompany").value === conn.id) loadTemplateSettingsIntoForm(conn);
@@ -412,13 +435,21 @@ const App = (() => {
 
   function closeStationsModal() {
     qs("stationsModalOverlay").classList.remove("active");
+    if (stationsModalDirty) {
+      const conn = connections.find(c => c.id === stationsModalConnId);
+      const map = conn?.templateSettings?.stationFacility || {};
+      Audit.log("Edit company facility settings", conn?.companyName || "", Object.entries(map).map(([st, f]) => `${st}→${f || "(none)"}`).join(", "));
+      stationsModalDirty = false;
+    }
     if (currentView === "dashboard") renderDashboard(); // refresh the missing-facility_id badge without a full reload
   }
 
   async function handleDeleteConnection(id) {
     if (!confirm("Remove this company connection? This does not delete anything on the vendor side.")) return;
+    const removed = connections.find(c => c.id === id);
     try {
       await SheetsClient.deleteConnection(id);
+      Audit.log("Remove company", removed?.companyName || id, removed ? `Brand: ${BRANDS[removed.brand]?.label || removed.brand}` : "");
       await refreshConnections();
     } catch (e) {
       alert(`Could not remove: ${e.message}`);
@@ -564,6 +595,7 @@ const App = (() => {
       alert(`Could not save connection (${e.message}). Check Settings → Proxy base URL and Google Sheet ID.`);
       return;
     }
+    Audit.log("Add company", companyName, `Brand: ${brand.label} · ${testFirst ? `Tested, ${stations.length} station(s) found` : "Saved without test"}`);
     closeAddCompanyModal();
     await refreshConnections();
   }
@@ -610,6 +642,7 @@ const App = (() => {
       lastCompareResult = { conn, result };
       renderCompareResults(conn, result);
       qs("cmpStatus").textContent = `Done — ${readings.length} row(s) read.`;
+      Audit.log("Comparison", conn.companyName, `Hourly vs Monthly · ${result.totalChecked} facility-month(s) checked · ${result.flagged.length} flagged`);
     } catch (e) {
       qs("cmpStatus").textContent = `Failed: ${e.message}`;
     }
@@ -651,6 +684,7 @@ const App = (() => {
   function handleDownloadCompare() {
     if (!lastCompareResult) return;
     const { conn, result } = lastCompareResult;
+    Audit.log("Download comparison", conn.companyName, `${result.flagged.length} flagged row(s)`);
     const headers = ["facility_id", "Month", "Monthly report (kWh)", "Hourly sum (kWh)", "Diff (kWh)", "Diff (%)", "Issue"];
     const rows = result.flagged.length
       ? result.flagged.map(r => [r.facilityId, r.month, r.monthlyKwh, r.hourlyKwh, r.diffKwh, r.diffPct, r.issue])
@@ -714,6 +748,7 @@ const App = (() => {
         });
         const groups = TemplateExport.build(filtered, brandKey, baseSettings);
         renderExportResults(conn, { resolution, template: baseSettings.template }, groups, filtered.length, "Hourly");
+        Audit.log("Export built", conn.companyName, `Hourly · Template ${baseSettings.template} · ${startDate} → ${endDate} · ${filtered.length} row(s) · ${groups.length} facility file(s)`);
         qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.` + (filtered.length ? "" : exportDiagnostic(readings, resolution, brandKey, conn.templateSettings?.utcOffset ?? 8, startDate, endDate));
       } else {
         const settingsForFacility = conn.templateSettings || {};
@@ -727,6 +762,7 @@ const App = (() => {
         });
         const groups = buildMonthlyExportGroups(filtered, brandKey, settingsForFacility);
         renderExportResults(conn, { resolution, template: null }, groups, filtered.length, "Monthly");
+        Audit.log("Export built", conn.companyName, `Monthly · ${startDate} → ${endDate} · ${filtered.length} row(s) · ${groups.length} facility file(s)`);
         qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.` + (filtered.length ? "" : exportDiagnostic(readings, resolution, brandKey, conn.templateSettings?.utcOffset ?? 8, startDate, endDate));
       }
     } catch (e) {
@@ -784,6 +820,7 @@ const App = (() => {
   }
 
   function downloadExportFacility(conn, exportKind, group) {
+    Audit.log("Export downloaded", conn.companyName, `${group.facilityId} · ${exportKind.resolution === "Hourly" ? `Template ${exportKind.template}` : "Monthly"} · ${group.rows.length} row(s)`);
     const safeFacility = group.facilityId.replace(/[^a-z0-9_-]+/gi, "_");
     const ws = XLSX.utils.aoa_to_sheet([group.headers, ...group.rows]);
     const wb = XLSX.utils.book_new();
@@ -951,6 +988,9 @@ const App = (() => {
         delete conn.pendingJob[resolution]; // fully caught up — nothing left to resume
       }
       await SheetsClient.saveConnection(conn).catch(() => {});
+      Audit.log("Data extraction", conn.companyName,
+        `${resolution} · ${startDate} → ${endDate} · ${stationIds.length} station(s) · Status: ${job.status} · ${job.rowsCollected.length} row(s)`
+        + (jobRow.querySelector(".job-status").textContent.includes("Sheet sync failed") ? " · Sheet sync FAILED" : ""));
       job._downloadRows = job.rowsCollected;
       jobRow._job = job;
     });
@@ -1033,6 +1073,7 @@ const App = (() => {
   // the Export tab, which reads accumulated Readings for any date range
   // rather than just this one job's in-memory rows.
   function downloadRowsAsExcel(job) {
+    Audit.log("Download raw extraction", job.connection.companyName, `${job.resolution} · ${job.startDate} → ${job.endDate} · ${job.rowsCollected.length} row(s)`);
     const utcOffset = job.connection.templateSettings?.utcOffset ?? 8;
     const rows = job.rowsCollected.map(r => ({
       Timestamp: formatReadableTimestamp(r, job.brand, utcOffset),
@@ -1044,6 +1085,149 @@ const App = (() => {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, job.resolution);
     XLSX.writeFile(wb, `${job.connection.companyName}_${job.resolution}_${job.startDate}_${job.endDate}_raw.xlsx`);
+  }
+
+  /* ---------------------------- settings password lock ---------------------------- */
+  // NOTE: this is a UI lock only. The check runs in the browser, so anyone who
+  // opens DevTools can get past it — it stops casual/accidental changes, not a
+  // determined user. Only the SHA-256 of the password is stored here.
+  const SETTINGS_PASSWORD_SHA256 = "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4";
+
+  function openSettingsLock() {
+    qs("settingsPasswordInput").value = "";
+    qs("settingsLockError").textContent = "";
+    qs("settingsLockOverlay").classList.add("active");
+    setTimeout(() => qs("settingsPasswordInput").focus(), 30);
+  }
+  function closeSettingsLock() { qs("settingsLockOverlay").classList.remove("active"); }
+
+  function handleSettingsUnlock() {
+    const pw = qs("settingsPasswordInput").value;
+    if (CryptoJS.SHA256(pw).toString() === SETTINGS_PASSWORD_SHA256) {
+      settingsUnlocked = true;
+      closeSettingsLock();
+      Audit.log("Settings unlocked", "", "");
+      showView("settings");
+    } else {
+      qs("settingsLockError").textContent = "Incorrect password.";
+      qs("settingsPasswordInput").select();
+      Audit.log("Settings unlock FAILED", "", "Wrong password entered");
+    }
+  }
+
+  /* ---------------------------- audit log ---------------------------- */
+  // Every entry goes to the Google Sheet's "Audit" tab via the proxy. If the
+  // proxy can't take it (offline, or its appendAudit action isn't deployed
+  // yet), the entry is kept in this browser and re-sent with the next one —
+  // so nothing is lost, but it's only visible here until it syncs.
+  const Audit = (() => {
+    const PENDING_KEY = "slc.auditPending";
+    const loadPending = () => { try { return JSON.parse(localStorage.getItem(PENDING_KEY) || "[]"); } catch { return []; } };
+    const savePending = (arr) => { try { localStorage.setItem(PENDING_KEY, JSON.stringify(arr.slice(-2000))); } catch {} };
+    let flushing = false;
+
+    async function flush() {
+      if (flushing) return;
+      const pending = loadPending();
+      if (!pending.length) return;
+      flushing = true;
+      try {
+        await SheetsClient.appendAudit(pending);
+        const now = loadPending();
+        savePending(now.slice(pending.length)); // keep anything logged while we were sending
+      } catch { flushing = false; return; /* stays pending; retried on the next log() */ }
+      flushing = false;
+      if (loadPending().length) return flush(); // entries logged mid-send go out right away
+    }
+
+    function log(action, company, details) {
+      const entry = {
+        timestamp: new Date().toISOString(),
+        user: currentEmail || "(not signed in)",
+        role: currentRole || "",
+        action, company: company || "", details: details || "",
+      };
+      savePending([...loadPending(), entry]);
+      flush();
+    }
+    return { log, flush, loadPending };
+  })();
+
+  let auditEntries = [];
+  let auditSource = "";
+
+  async function loadAuditLog() {
+    qs("auditStatus").textContent = "Loading…";
+    await Audit.flush();
+    const pending = Audit.loadPending().map(e => ({ ...e, _pending: true }));
+    try {
+      const res = await SheetsClient.listAudit();
+      const rows = Array.isArray(res) ? res : (res.rows || res.entries || []);
+      auditEntries = [...rows, ...pending];
+      auditSource = pending.length ? `${pending.length} entr${pending.length === 1 ? "y" : "ies"} not yet synced to the Sheet (shown with ⏳).` : "";
+    } catch (e) {
+      auditEntries = pending;
+      auditSource = `Could not read the Audit tab from the Sheet (${e.message}). Showing only entries stored in this browser.`;
+    }
+    auditEntries.sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
+    const actions = [...new Set(auditEntries.map(e => e.action))].sort();
+    const sel = qs("auditFilterAction"), keep = sel.value;
+    sel.innerHTML = `<option value="">All actions</option>` + actions.map(a => `<option>${escapeHtml(a)}</option>`).join("");
+    sel.value = actions.includes(keep) ? keep : "";
+    const users = [...new Set(auditEntries.map(e => e.user))].sort();
+    const usel = qs("auditFilterUser"), ukeep = usel.value;
+    usel.innerHTML = `<option value="">All users</option>` + users.map(u => `<option>${escapeHtml(u)}</option>`).join("");
+    usel.value = users.includes(ukeep) ? ukeep : "";
+    renderAuditTable();
+  }
+
+  function filteredAuditEntries() {
+    const u = qs("auditFilterUser").value, a = qs("auditFilterAction").value;
+    const t = qs("auditFilterText").value.trim().toLowerCase();
+    return auditEntries.filter(e => (!u || e.user === u) && (!a || e.action === a)
+      && (!t || `${e.company} ${e.details}`.toLowerCase().includes(t)));
+  }
+
+  function fmtAuditTime(ts) {
+    const d = new Date(ts);
+    if (isNaN(d)) return String(ts);
+    const p = n => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+
+  function renderAuditTable() {
+    const list = filteredAuditEntries();
+    qs("auditStatus").textContent = `${list.length} of ${auditEntries.length} entr${auditEntries.length === 1 ? "y" : "ies"}. ${auditSource}`;
+    const table = qs("auditTable");
+    if (!list.length) { table.innerHTML = `<tbody><tr><td class="field-help">No audit entries match.</td></tr></tbody>`; return; }
+    table.innerHTML = `<thead><tr><th>Time (your local)</th><th>User</th><th>Action</th><th>Company</th><th>Details</th></tr></thead><tbody>` +
+      list.slice(0, 1000).map(e => `<tr>
+        <td style="white-space:nowrap;">${e._pending ? "⏳ " : ""}${escapeHtml(fmtAuditTime(e.timestamp))}</td>
+        <td>${escapeHtml(e.user)}${e.role ? `<div class="field-help" style="margin-top:0;">${escapeHtml(e.role)}</div>` : ""}</td>
+        <td><span class="audit-action" data-kind="${escapeHtml(auditKind(e.action))}">${escapeHtml(e.action)}</span></td>
+        <td>${escapeHtml(e.company)}</td>
+        <td style="color:var(--muted);">${escapeHtml(e.details)}</td></tr>`).join("") + `</tbody>`;
+  }
+
+  function auditKind(action) {
+    const a = String(action).toLowerCase();
+    if (a.includes("failed") || a.includes("remove")) return "danger";
+    if (a.includes("settings")) return "settings";
+    if (a.includes("extraction")) return "extract";
+    if (a.includes("export") || a.includes("download")) return "export";
+    if (a.includes("compar")) return "compare";
+    if (a.includes("company")) return "company";
+    return "other";
+  }
+
+  function downloadAuditLog() {
+    const list = filteredAuditEntries();
+    Audit.log("Download audit log", "", `${list.length} entr${list.length === 1 ? "y" : "ies"}`);
+    const ws = XLSX.utils.aoa_to_sheet([["Timestamp", "User", "Role", "Action", "Company", "Details"],
+      ...list.map(e => [fmtAuditTime(e.timestamp), e.user, e.role, e.action, e.company, e.details])]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Audit");
+    XLSX.writeFile(wb, `SolarLink_AuditLog_${new Date().toISOString().slice(0, 10)}.xlsx`);
   }
 
   function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }

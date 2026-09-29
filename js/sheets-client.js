@@ -66,6 +66,13 @@ const SheetsClient = (() => {
   async function listReadings(company) {
     return call("listReadings", { company });
   }
+  // Audit tab: Timestamp | User | Role | Action | Company | Details
+  async function appendAudit(entries) {
+    return call("appendAudit", { entries });
+  }
+  async function listAudit() {
+    return call("listAudit");
+  }
 
-  return { loadConfig, saveConfig, isConfigured, sheetUrl, whoAmI, listConnections, saveConnection, deleteConnection, appendReadings, listReadings };
+  return { loadConfig, saveConfig, isConfigured, sheetUrl, whoAmI, listConnections, saveConnection, deleteConnection, appendReadings, listReadings, appendAudit, listAudit };
 })();
