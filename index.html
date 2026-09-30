@@ -275,10 +275,25 @@ tbody tr:last-child td{border-bottom:none;}
         <div class="callout">
           Sums Hourly-resolution readings into monthly totals per facility_id (grouped exactly like the Extraction tab's export settings) and compares them against Monthly-resolution readings already in your Google Sheet's <code>Readings</code> tab, flagging any month where they disagree by 0.005 kWh or more. Needs both Hourly and Monthly data already extracted for the same company.
         </div>
-        <div class="field" style="max-width:340px;">
-          <label>Company</label>
-          <select id="cmpCompany"><option value="">Select a company…</option></select>
+        <div class="extraction-grid" style="grid-template-columns:minmax(220px,1.6fr) 1fr 1fr 1fr;align-items:end;gap:12px;">
+          <div class="field" style="margin:0;">
+            <label>Company</label>
+            <select id="cmpCompany"><option value="">Select a company…</option></select>
+          </div>
+          <div class="field" style="margin:0;">
+            <label>Period</label>
+            <select id="cmpPeriod"></select>
+          </div>
+          <div class="field" style="margin:0;">
+            <label>From month</label>
+            <select id="cmpFromMonth"></select>
+          </div>
+          <div class="field" style="margin:0;">
+            <label>To month</label>
+            <select id="cmpToMonth"></select>
+          </div>
         </div>
+        <div class="field-help" style="margin-top:6px;">Only rows in this range are read from the Sheet — a shorter range is faster and lighter on the proxy.</div>
         <div style="margin-top:12px;">
           <button class="btn btn-primary" id="btnRunCompare">Run comparison</button>
           <span id="cmpStatus" style="font-size:.82rem;color:var(--muted);margin-left:10px;"></span>
@@ -513,15 +528,15 @@ tbody tr:last-child td{border-bottom:none;}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client"></script>
-<script src="js/brands.js?v=20260930h"></script>
-<script src="js/signing.js?v=20260930h"></script>
-<script src="js/auth-client.js?v=20260930h"></script>
-<script src="js/proxy-client.js?v=20260930h"></script>
-<script src="js/datepicker.js?v=20260930h"></script>
-<script src="js/sheets-client.js?v=20260930h"></script>
-<script src="js/templates.js?v=20260930h"></script>
-<script src="js/compare.js?v=20260930h"></script>
-<script src="js/extraction.js?v=20260930h"></script>
-<script src="js/app.js?v=20260930h"></script>
+<script src="js/brands.js?v=20260930j"></script>
+<script src="js/signing.js?v=20260930j"></script>
+<script src="js/auth-client.js?v=20260930j"></script>
+<script src="js/proxy-client.js?v=20260930j"></script>
+<script src="js/datepicker.js?v=20260930j"></script>
+<script src="js/sheets-client.js?v=20260930j"></script>
+<script src="js/templates.js?v=20260930j"></script>
+<script src="js/compare.js?v=20260930j"></script>
+<script src="js/extraction.js?v=20260930j"></script>
+<script src="js/app.js?v=20260930j"></script>
 </body>
 </html>
