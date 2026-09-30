@@ -308,7 +308,7 @@ const App = (() => {
     const table = qs("stationsModalDataStoredTable");
     table.innerHTML = `<tbody><tr><td class="field-help">Loading…</td></tr></tbody>`;
     try {
-      const readings = await SheetsClient.listReadings(conn.companyName);
+      const readings = dedupeReadings(await SheetsClient.listReadings(conn.companyName));
       renderDataStoredTable(table, readings);
     } catch (e) {
       table.innerHTML = `<tbody><tr><td class="field-help">Could not load: ${escapeHtml(e.message)}</td></tr></tbody>`;
@@ -636,13 +636,22 @@ const App = (() => {
     qs("cmpResultsCard").hidden = true;
 
     try {
-      const readings = normalizeReadingsForTemplates(
-        await SheetsClient.listReadings(conn.companyName), conn.brand, conn.templateSettings?.utcOffset);
-      const result = CompareEngine.compareHourlyVsMonthly(readings, conn);
+      const rawReadings = dedupeReadings(await SheetsClient.listReadings(conn.companyName));
+      const readings = normalizeReadingsForTemplates(rawReadings, conn.brand, conn.templateSettings?.utcOffset);
+      let result = CompareEngine.compareHourlyVsMonthly(readings, conn);
+      // If the engine parses the readable "YYYY-MM-DD HH:MM:SS" strings itself
+      // (rather than via wallClockFromRow), the epoch-converted copy would read
+      // as no data — so fall back to the rows exactly as stored.
+      const hasHourly = rawReadings.some(r => String(r.resolution).trim() === "Hourly");
+      const hasMonthly = rawReadings.some(r => String(r.resolution).trim() === "Monthly");
+      if ((hasHourly && !result.hourlyMonths.length) || (hasMonthly && !result.monthlyMonths.length)) {
+        const alt = CompareEngine.compareHourlyVsMonthly(rawReadings.map(r => ({ ...r, kwh: Number(r.kwh) })), conn);
+        if (alt.hourlyMonths.length + alt.monthlyMonths.length > result.hourlyMonths.length + result.monthlyMonths.length) result = alt;
+      }
       lastCompareResult = { conn, result };
       renderCompareResults(conn, result);
       qs("cmpStatus").textContent = `Done — ${readings.length} row(s) read.`;
-      Audit.log("Comparison", conn.companyName, `Hourly vs Monthly · ${result.totalChecked} facility-month(s) checked · ${result.flagged.length} flagged`);
+      Audit.log("Comparison", conn.companyName, `Hourly vs Monthly · ${result.totalChecked} facility-month(s) checked · ${result.flagged.length} flagged · ${(result.notExtracted || []).length} not extracted`);
     } catch (e) {
       qs("cmpStatus").textContent = `Failed: ${e.message}`;
     }
@@ -653,13 +662,20 @@ const App = (() => {
     qs("cmpResultsCard").hidden = false;
     const noHourly = !result.hourlyMonths.length;
     const noMonthly = !result.monthlyMonths.length;
+    const notExtracted = result.notExtracted || [];
     let summary = `Checked ${result.totalChecked} facility-month combination(s). `;
     if (noHourly || noMonthly) {
       summary += `<strong style="color:var(--warn);">Missing ${noHourly ? "Hourly" : "Monthly"} data entirely for this company — run that extraction first.</strong>`;
     } else if (!result.flagged.length) {
       summary += `<span style="color:var(--ok);">No discrepancies found — hourly and monthly figures match for every checked month.</span>`;
     } else {
-      summary += `<strong style="color:var(--warn);">${result.flagged.length} month(s) flagged.</strong>`;
+      const incomplete = result.flagged.filter(f => f.complete === false).length;
+      summary += `<strong style="color:var(--warn);">${result.flagged.length} month(s) flagged</strong>`
+        + (incomplete ? ` — ${incomplete} of them only because Hourly doesn't cover the whole month yet.` : ".");
+    }
+    if (notExtracted.length && !noHourly) {
+      summary += `<div style="margin-top:8px;">Not checked — Monthly exists but Hourly was never extracted for: `
+        + `<strong>${escapeHtml(summarizeMonths(notExtracted))}</strong>. Run an Hourly extraction for those dates to include them.</div>`;
     }
     qs("cmpSummary").innerHTML = summary;
 
@@ -668,7 +684,7 @@ const App = (() => {
       table.innerHTML = "";
       return;
     }
-    table.innerHTML = `<thead><tr><th>facility_id</th><th>Month</th><th>Monthly report (kWh)</th><th>Hourly sum (kWh)</th><th>Diff (kWh)</th><th>Diff (%)</th><th>Issue</th></tr></thead><tbody>` +
+    table.innerHTML = `<thead><tr><th>facility_id</th><th>Month</th><th>Monthly report (kWh)</th><th>Hourly sum (kWh)</th><th>Diff (kWh)</th><th>Diff (%)</th><th>Hourly coverage</th><th>Issue</th></tr></thead><tbody>` +
       result.flagged.map(r => `
         <tr>
           <td>${escapeHtml(r.facilityId)}</td>
@@ -677,18 +693,36 @@ const App = (() => {
           <td>${r.hourlyKwh}</td>
           <td>${r.diffKwh}</td>
           <td>${r.diffPct}%</td>
-          <td>${escapeHtml(r.issue)}</td>
+          <td>${escapeHtml(r.hourlyCoverage || "")}</td>
+          <td style="${r.complete === false ? "color:var(--muted);" : ""}">${escapeHtml(r.issue)}</td>
         </tr>`).join("") + `</tbody>`;
+  }
+
+  // "GEN3228: 2026-01 → 2026-06; GEN1111: 2026-03" — compact list of months per facility.
+  function summarizeMonths(list) {
+    const byFac = new Map();
+    list.forEach(x => { if (!byFac.has(x.facilityId)) byFac.set(x.facilityId, []); byFac.get(x.facilityId).push(x.month); });
+    const next = (m) => { const [y, mo] = m.split("-").map(Number); return mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, "0")}`; };
+    return [...byFac.entries()].map(([fac, months]) => {
+      months.sort();
+      const ranges = [];
+      let a = months[0], b = months[0];
+      for (const m of months.slice(1)) { if (m === next(b)) b = m; else { ranges.push(a === b ? a : `${a} → ${b}`); a = b = m; } }
+      ranges.push(a === b ? a : `${a} → ${b}`);
+      return `${fac}: ${ranges.join(", ")}`;
+    }).join("; ");
   }
 
   function handleDownloadCompare() {
     if (!lastCompareResult) return;
     const { conn, result } = lastCompareResult;
     Audit.log("Download comparison", conn.companyName, `${result.flagged.length} flagged row(s)`);
-    const headers = ["facility_id", "Month", "Monthly report (kWh)", "Hourly sum (kWh)", "Diff (kWh)", "Diff (%)", "Issue"];
-    const rows = result.flagged.length
-      ? result.flagged.map(r => [r.facilityId, r.month, r.monthlyKwh, r.hourlyKwh, r.diffKwh, r.diffPct, r.issue])
-      : [["No discrepancies found", "", "", "", "", "", ""]];
+    const headers = ["facility_id", "Month", "Monthly report (kWh)", "Hourly sum (kWh)", "Diff (kWh)", "Diff (%)", "Hourly coverage", "Issue"];
+    const rows = [
+      ...result.flagged.map(r => [r.facilityId, r.month, r.monthlyKwh, r.hourlyKwh, r.diffKwh, r.diffPct, r.hourlyCoverage || "", r.issue]),
+      ...(result.notExtracted || []).map(r => [r.facilityId, r.month, r.monthlyKwh, "", "", "", "0 days", "Not checked — Hourly not extracted"]),
+    ];
+    if (!rows.length) rows.push(["No discrepancies found", "", "", "", "", "", "", ""]);
     const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "HourlyVsMonthly");
@@ -728,7 +762,7 @@ const App = (() => {
     qs("expResultsCard").hidden = true;
 
     try {
-      const rawReadings = await SheetsClient.listReadings(conn.companyName);
+      const rawReadings = dedupeReadings(await SheetsClient.listReadings(conn.companyName));
       const brandKey = conn.brand;
       const readings = normalizeReadingsForTemplates(rawReadings, brandKey, conn.templateSettings?.utcOffset);
 
@@ -1245,6 +1279,21 @@ const App = (() => {
   // returns null and every row gets silently dropped from Export/Compare.
   // This converts readable rows back into a form wallClockFromRow accepts,
   // and verifies the round-trip so no row is ever shifted by the wrong offset.
+  // Same rule as the proxy's listReadings: one row per (Resolution,
+  // StationId, Timestamp), newest RunAt wins. Duplicates come from backfill
+  // chunks resuming on the day the previous chunk ended, and from re-running
+  // an extraction — left in, they're double-counted by Compare and Export.
+  // Harmless no-op once the updated proxy is deployed (it already de-dupes).
+  function dedupeReadings(readings) {
+    const newest = new Map();
+    for (const r of readings || []) {
+      const key = `${r.resolution}\u0001${r.stationId}\u0001${String(r.timestamp).trim()}`;
+      const prev = newest.get(key);
+      if (!prev || String(r.runAt || "") >= String(prev.runAt || "")) newest.set(key, r);
+    }
+    return [...newest.values()];
+  }
+
   function normalizeReadingsForTemplates(readings, brandKey, utcOffset) {
     const off = utcOffset ?? 8;
     // A wall-clock result only counts if every field is a real number AND it
