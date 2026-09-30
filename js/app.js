@@ -723,18 +723,69 @@ const App = (() => {
     if (notExtracted.length && !noHourly) lines.push(`Hourly not extracted (whole month missing): <strong>${escapeHtml(summarizeMonths(notExtracted))}</strong>. Run an Hourly extraction for those dates to include them.`);
     if (monthlyMissing.length && !noMonthly) lines.push(`No Monthly figure to compare against: <strong>${escapeHtml(summarizeMonths(monthlyMissing))}</strong>. Run a Monthly extraction for those month(s).`);
     if (result.unreadable?.count) lines.push(`<span style="color:var(--err);">⚠ ${result.unreadable.count} row(s) skipped — their timestamp couldn't be read</span> (e.g. ${escapeHtml(result.unreadable.samples.join("; "))}). Send this to your developer.`);
+    // Keep whatever filters were chosen before a re-run, if they still apply.
+    const prev = {
+      facility: qs("cmpFilterFacility")?.value || "",
+      month: qs("cmpFilterMonth")?.value || "",
+      status: qs("cmpFilterStatus")?.value || "",
+    };
+    const all = compareRows(result);
+    const facilities = [...new Set(all.map(r => r.facilityId))].sort();
+    const months = [...new Set(all.map(r => r.month))].sort();
+    const statuses = Object.keys(COMPARE_STATUS).filter(k => all.some(r => r.kind === k));
+    const opt = (v, label, sel) => `<option value="${escapeHtml(v)}"${v === sel ? " selected" : ""}>${escapeHtml(label)}</option>`;
+    const keep = (v, list) => (v === "" || list.includes(v) ? v : "");
+    const fac = keep(prev.facility, facilities), mon = keep(prev.month, months);
+    const sta = prev.status === "issues" ? "issues" : keep(prev.status, statuses);
+    const countBy = (k) => all.filter(r => r.kind === k).length;
+
     qs("cmpSummary").innerHTML = lines.map((l, i) => `<div style="${i ? "margin-top:6px;" : ""}">${l}</div>`).join("")
-      + `<label style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;font-size:.82rem;cursor:pointer;">
-           <input type="checkbox" id="cmpIssuesOnly"> Show issues only</label>`;
-    qs("cmpIssuesOnly").addEventListener("change", () => renderCompareTable(result));
+      + `<div class="extraction-grid" style="grid-template-columns:1fr 1fr 1.2fr auto;align-items:end;margin-top:14px;gap:10px;">
+           <div class="field" style="margin:0;"><label>facility_id</label>
+             <select id="cmpFilterFacility">${opt("", `All facilities (${facilities.length})`, fac)}${facilities.map(f => opt(f, f, fac)).join("")}</select></div>
+           <div class="field" style="margin:0;"><label>Month</label>
+             <select id="cmpFilterMonth">${opt("", `All months (${months.length})`, mon)}${months.map(m => opt(m, m, mon)).join("")}</select></div>
+           <div class="field" style="margin:0;"><label>Status</label>
+             <select id="cmpFilterStatus">${opt("", "All statuses", sta)}${opt("issues", `All issues (${all.filter(r => r.kind !== "ok").length})`, sta)}
+               ${statuses.map(k => opt(k, `${COMPARE_STATUS[k].label} (${countBy(k)})`, sta)).join("")}</select></div>
+           <button class="btn" id="btnCmpClearFilters" style="height:38px;">Clear</button>
+         </div>
+         <div id="cmpFilterCount" class="field-help" style="margin-top:8px;"></div>`;
+    ["cmpFilterFacility", "cmpFilterMonth", "cmpFilterStatus"].forEach(id => qs(id).addEventListener("change", () => renderCompareTable(result)));
+    qs("btnCmpClearFilters").addEventListener("click", () => {
+      ["cmpFilterFacility", "cmpFilterMonth", "cmpFilterStatus"].forEach(id => { qs(id).value = ""; });
+      renderCompareTable(result);
+    });
     renderCompareTable(result);
   }
 
+  // Rows after the facility / month / status filters — shared by the table and the Excel download.
+  function filteredCompareRows(result) {
+    const fac = qs("cmpFilterFacility")?.value || "";
+    const mon = qs("cmpFilterMonth")?.value || "";
+    const sta = qs("cmpFilterStatus")?.value || "";
+    return compareRows(result).filter(r => (!fac || r.facilityId === fac) && (!mon || r.month === mon)
+      && (!sta || (sta === "issues" ? r.kind !== "ok" : r.kind === sta)));
+  }
+
+  function compareFilterDescription() {
+    const parts = [
+      qs("cmpFilterFacility")?.value && `facility ${qs("cmpFilterFacility").value}`,
+      qs("cmpFilterMonth")?.value && `month ${qs("cmpFilterMonth").value}`,
+      qs("cmpFilterStatus")?.value && `status ${qs("cmpFilterStatus").selectedOptions[0].textContent.replace(/\s*\(\d+\)$/, "")}`,
+    ].filter(Boolean);
+    return parts.join(", ");
+  }
+
   function renderCompareTable(result) {
-    const issuesOnly = qs("cmpIssuesOnly")?.checked;
-    const rows = compareRows(result).filter(r => !issuesOnly || r.kind !== "ok");
+    const rows = filteredCompareRows(result);
+    const total = compareRows(result).length;
+    const desc = compareFilterDescription();
+    if (qs("cmpFilterCount")) qs("cmpFilterCount").textContent = desc
+      ? `Showing ${rows.length} of ${total} row(s) — filtered by ${desc}. Download Excel exports these rows.`
+      : `Showing all ${total} row(s).`;
     const table = qs("cmpResultsTable");
-    if (!rows.length) { table.innerHTML = `<tbody><tr><td class="field-help">${issuesOnly ? "No issues — every month is OK." : "No data."}</td></tr></tbody>`; return; }
+    if (!rows.length) { table.innerHTML = `<tbody><tr><td class="field-help">No rows match these filters.</td></tr></tbody>`; return; }
     const pctCell = (v) => v === "" ? "" : `${v}%`;
     table.innerHTML = `<thead><tr><th>facility_id</th><th>Month</th><th>Status</th><th>Monthly report (kWh)</th><th>Hourly sum (kWh)</th><th>Diff (kWh)</th><th>Diff (%)</th><th>Hourly coverage</th><th>Missing days (no hourly data)</th><th>Monthly fetched</th><th>Details</th></tr></thead><tbody>` +
       rows.map(r => {
@@ -773,12 +824,12 @@ const App = (() => {
   function handleDownloadCompare() {
     if (!lastCompareResult) return;
     const { conn, result } = lastCompareResult;
-    Audit.log("Download comparison", conn.companyName, `${compareRows(result).length} row(s)`);
+    Audit.log("Download comparison", conn.companyName, `${filteredCompareRows(result).length} row(s)${compareFilterDescription() ? ` · filtered by ${compareFilterDescription()}` : ""}`);
     const headers = ["facility_id", "Month", "Status", "Monthly report (kWh)", "Hourly sum (kWh)", "Diff (kWh)", "Diff (%)", "Hourly coverage", "Missing days (no hourly data)", "Monthly fetched", "Details"];
-    const rows = compareRows(result).map(r => [r.facilityId, r.month, (COMPARE_STATUS[r.kind] || {}).label || r.kind,
+    const rows = filteredCompareRows(result).map(r => [r.facilityId, r.month, (COMPARE_STATUS[r.kind] || {}).label || r.kind,
       r.monthlyKwh, r.hourlyKwh, r.diffKwh, r.diffPct,
       r.hourlyCoverage || "", r.missingRanges || "none", r.monthlyAsOf || "", r.issue]);
-    if (!rows.length) rows.push(["No data", "", "", "", "", "", "", "", "", "", ""]);
+    if (!rows.length) rows.push(["No rows match these filters", "", "", "", "", "", "", "", "", "", ""]);
     const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
     ws["!cols"] = [10, 9, 18, 14, 14, 11, 9, 13, 40, 13, 60].map(wch => ({ wch }));
     const wb = XLSX.utils.book_new();
