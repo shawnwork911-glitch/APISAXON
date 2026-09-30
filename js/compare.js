@@ -30,12 +30,21 @@
 const CompareEngine = (() => {
   const BRAND_LABEL_TO_KEY = { FusionSolar: "fusionsolar", SolarEdge: "solaredge" };
 
+  // Date of a reading. Uses the brand's own parser first; if that can't read
+  // it, falls back to a readable "YYYY-MM-DD[ HH:MM[:SS]]" (or "DD/MM/YYYY")
+  // timestamp as written to the sheet — so a row stored in a slightly
+  // different form is still placed in the right month instead of vanishing.
   function wallClock(row, utcOffset) {
     const brandKey = BRAND_LABEL_TO_KEY[row.brand] || String(row.brand || "").toLowerCase();
-    let wc;
-    try { wc = TemplateExport.wallClockFromRow(row, brandKey, utcOffset); } catch { return null; }
-    if (!wc || ![wc.y, wc.mo, wc.d].every(Number.isFinite)) return null;
-    return wc;
+    let wc = null;
+    try { wc = TemplateExport.wallClockFromRow(row, brandKey, utcOffset); } catch { wc = null; }
+    if (wc && [wc.y, wc.mo, wc.d].every(Number.isFinite)) return wc;
+    const t = String(row.readableTimestamp ?? row.timestamp ?? "").trim();
+    let m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}))?/);
+    if (m) return { y: +m[1], mo: +m[2], d: +m[3], H: m[4] ? +m[4] : 0 };
+    m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}))?/);
+    if (m) return { y: +m[3], mo: +m[2], d: +m[1], H: m[4] ? +m[4] : 0 };
+    return null;
   }
 
   const pad = (n) => String(n).padStart(2, "0");
@@ -87,11 +96,16 @@ const CompareEngine = (() => {
     const hourlyMonthsSeen = new Set();
     const monthlyMonthsSeen = new Set();
 
+    const unreadable = { count: 0, samples: [] };
     for (const r of readings) {
       const res = String(r.resolution || "").trim();
       if (res !== "Hourly" && res !== "Monthly") continue;
       const wc = wallClock(r, utcOffset);
-      if (!wc) continue;
+      if (!wc) {
+        unreadable.count++;
+        if (unreadable.samples.length < 3) unreadable.samples.push(`${res} ${r.stationId}: ${JSON.stringify(r.readableTimestamp ?? r.timestamp)}`);
+        continue;
+      }
       const month = `${wc.y}-${pad(wc.mo)}`;
       const facilityId = TemplateExport.facilityKeyFor(r.stationId, settings);
       const key = `${facilityId}|${month}`;
@@ -112,6 +126,7 @@ const CompareEngine = (() => {
     const flagged = [];       // compared months that need attention (gap, incomplete hourly, or zero generation)
     const notExtracted = [];  // Monthly exists, Hourly never extracted for that month
     const monthlyMissing = []; // Hourly exists, no Monthly figure to compare against
+    const ok = [];             // fully covered, totals agree, non-zero — listed so every month is visible
     let totalChecked = 0;
     const today = todayISO();
     const monthRange = (month) => {
@@ -146,7 +161,13 @@ const CompareEngine = (() => {
       // actually generated something. (Before, "totals agree" alone was enough,
       // so an incomplete month of 0 kWh in both — like a plant that's offline —
       // was silently reported as "no discrepancies".)
-      if (complete && !hasGap && !zeroBoth) continue;
+      const monthlyAsOfOk = localDateOf(monthlyRunAt.get(key));
+      if (complete && !hasGap && !zeroBoth) {
+        ok.push({ facilityId, month, kind: "ok", monthlyKwh, hourlyKwh: round2(hourlyKwh), diffKwh, diffPct, hasGap: false,
+          hourlyCoverage: `${coveredDays}/${totalDays} days`, missingDays: [], missingRanges: "",
+          monthlyAsOf: monthlyAsOfOk, monthlyStale: false, complete: true, issue: "OK — hourly matches monthly" });
+        continue;
+      }
 
       const missing = [];
       for (let day = 1; day <= totalDays; day++) if (!days.has(day)) missing.push(`${month}-${pad(day)}`);
@@ -192,8 +213,10 @@ const CompareEngine = (() => {
       if (monthlySum.has(key)) continue;
       const [facilityId, month] = key.split("|");
       const [y, mo] = month.split("-").map(Number);
+      const total = daysInMonth(y, mo), miss = [];
+      for (let day = 1; day <= total; day++) if (!days.has(day)) miss.push(`${month}-${pad(day)}`);
       monthlyMissing.push({ facilityId, month, hourlyKwh: round2(hourlySum.get(key) || 0),
-        hourlyCoverage: `${days.size}/${daysInMonth(y, mo)} days` });
+        hourlyCoverage: `${days.size}/${total} days`, missingRanges: compressDays(miss, today) });
     }
 
     const byFacMonth = (a, b) => a.facilityId.localeCompare(b.facilityId) || a.month.localeCompare(b.month);
@@ -202,9 +225,12 @@ const CompareEngine = (() => {
       || ((a.hasGap && a.complete) ? Math.abs(b.diffKwh) - Math.abs(a.diffKwh) : byFacMonth(a, b)));
     notExtracted.sort(byFacMonth);
     monthlyMissing.sort(byFacMonth);
+    ok.sort(byFacMonth);
 
     return {
       flagged,
+      ok,
+      unreadable,
       notExtracted,
       monthlyMissing,
       totalChecked,

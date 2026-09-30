@@ -660,8 +660,11 @@ const App = (() => {
 
   // One list of every row the Compare results show (and download): months
   // needing attention, months with no hourly data, months with no Monthly figure.
+  // Every facility-month Compare knows about — OK ones included — in
+  // facility, then month order. Used for both the table and the download.
   function compareRows(result) {
-    return [
+    const rows = [
+      ...(result.ok || []),
       ...result.flagged,
       ...(result.notExtracted || []).map(r => ({
         facilityId: r.facilityId, month: r.month, kind: "notExtracted",
@@ -673,12 +676,24 @@ const App = (() => {
       ...(result.monthlyMissing || []).map(r => ({
         facilityId: r.facilityId, month: r.month, kind: "monthlyMissing",
         monthlyKwh: "", hourlyKwh: r.hourlyKwh, diffKwh: "", diffPct: "",
-        hourlyCoverage: r.hourlyCoverage, missingRanges: "",
-        monthlyAsOf: "", monthlyStale: false, complete: true,
-        issue: "No Monthly figure for this month — run a Monthly extraction to compare",
+        hourlyCoverage: r.hourlyCoverage, missingRanges: r.missingRanges || "",
+        monthlyAsOf: "", monthlyStale: false, complete: !r.missingRanges,
+        issue: "No Monthly figure for this month — run a Monthly extraction to compare"
+          + (r.missingRanges ? " · some hourly days missing" : ""),
       })),
     ];
+    return rows.sort((a, b) => a.facilityId.localeCompare(b.facilityId) || a.month.localeCompare(b.month));
   }
+
+  const COMPARE_STATUS = {
+    ok:             { label: "✓ OK",               color: "var(--ok)" },
+    mismatch:       { label: "⚠ Mismatch",         color: "var(--warn)" },
+    outage:         { label: "⚠ Outage",           color: "var(--err)" },
+    zero:           { label: "⚠ 0 kWh",            color: "var(--warn)" },
+    incomplete:     { label: "◐ Incomplete hourly", color: "var(--warn)" },
+    notExtracted:   { label: "○ No hourly",         color: "var(--muted)" },
+    monthlyMissing: { label: "○ No monthly",        color: "var(--muted)" },
+  };
 
   function renderCompareResults(conn, result) {
     qs("cmpResultsCard").hidden = false;
@@ -686,41 +701,49 @@ const App = (() => {
     const noMonthly = !result.monthlyMonths.length;
     const notExtracted = result.notExtracted || [];
     const monthlyMissing = result.monthlyMissing || [];
+    const okMonths = result.ok || [];
     const gaps = result.flagged.filter(f => f.hasGap && f.complete);
     const incomplete = result.flagged.filter(f => !f.complete);
     const zero = result.flagged.filter(f => f.kind === "zero");
     const stale = result.flagged.filter(f => f.monthlyStale);
 
     const lines = [];
-    let head = `Checked ${result.totalChecked} facility-month combination(s). `;
+    let head = `Checked ${result.totalChecked} facility-month combination(s): `;
     if (noHourly || noMonthly) {
       head += `<strong style="color:var(--warn);">Missing ${noHourly ? "Hourly" : "Monthly"} data entirely for this company — run that extraction first.</strong>`;
-    } else if (!result.flagged.length) {
-      head += `<span style="color:var(--ok);">Every checked month is complete and hourly matches monthly.</span>`;
     } else {
-      head += gaps.length
-        ? `<strong style="color:var(--warn);">${gaps.length} month(s) with a kWh gap.</strong>`
-        : `<span style="color:var(--ok);">No kWh gaps in fully-covered months.</span>`;
+      head += `<span style="color:var(--ok);">${okMonths.length} OK</span>`
+        + (result.flagged.length ? `, <strong style="color:var(--warn);">${result.flagged.length} need attention</strong>` : "")
+        + (gaps.length ? ` (${gaps.length} with a kWh gap)` : "") + ".";
     }
     lines.push(head);
-    if (incomplete.length) lines.push(`<span style="color:var(--warn);">${incomplete.length} month(s) with hourly data missing for some days</span> — see "Missing days" below.`);
+    if (incomplete.length) lines.push(`<span style="color:var(--warn);">${incomplete.length} month(s) with hourly data missing for some days</span> — see "Missing days".`);
     if (zero.length) lines.push(`<span style="color:var(--warn);">⚠ ${zero.length} month(s) show 0 kWh in both Monthly and Hourly (${escapeHtml(summarizeMonths(zero))})</span> — the plant may have been offline or not reporting.`);
     if (stale.length) lines.push(`<span style="color:var(--warn);">⚠ ${stale.length} Monthly figure(s) were fetched before that month's hourly data ended (${escapeHtml([...new Set(stale.map(f => f.month))].join(", "))})</span>, so they can't include the later days. Re-run the Monthly extraction for those month(s).`);
     if (notExtracted.length && !noHourly) lines.push(`Hourly not extracted (whole month missing): <strong>${escapeHtml(summarizeMonths(notExtracted))}</strong>. Run an Hourly extraction for those dates to include them.`);
-    if (monthlyMissing.length && !noMonthly) lines.push(`No Monthly figure to compare against: <strong>${escapeHtml(summarizeMonths(monthlyMissing))}</strong>.`);
-    qs("cmpSummary").innerHTML = lines.map((l, i) => `<div style="${i ? "margin-top:6px;" : ""}">${l}</div>`).join("");
+    if (monthlyMissing.length && !noMonthly) lines.push(`No Monthly figure to compare against: <strong>${escapeHtml(summarizeMonths(monthlyMissing))}</strong>. Run a Monthly extraction for those month(s).`);
+    if (result.unreadable?.count) lines.push(`<span style="color:var(--err);">⚠ ${result.unreadable.count} row(s) skipped — their timestamp couldn't be read</span> (e.g. ${escapeHtml(result.unreadable.samples.join("; "))}). Send this to your developer.`);
+    qs("cmpSummary").innerHTML = lines.map((l, i) => `<div style="${i ? "margin-top:6px;" : ""}">${l}</div>`).join("")
+      + `<label style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;font-size:.82rem;cursor:pointer;">
+           <input type="checkbox" id="cmpIssuesOnly"> Show issues only</label>`;
+    qs("cmpIssuesOnly").addEventListener("change", () => renderCompareTable(result));
+    renderCompareTable(result);
+  }
 
-    const rows = compareRows(result);
+  function renderCompareTable(result) {
+    const issuesOnly = qs("cmpIssuesOnly")?.checked;
+    const rows = compareRows(result).filter(r => !issuesOnly || r.kind !== "ok");
     const table = qs("cmpResultsTable");
-    if (!rows.length) { table.innerHTML = ""; return; }
+    if (!rows.length) { table.innerHTML = `<tbody><tr><td class="field-help">${issuesOnly ? "No issues — every month is OK." : "No data."}</td></tr></tbody>`; return; }
     const pctCell = (v) => v === "" ? "" : `${v}%`;
-    table.innerHTML = `<thead><tr><th>facility_id</th><th>Month</th><th>Monthly report (kWh)</th><th>Hourly sum (kWh)</th><th>Diff (kWh)</th><th>Diff (%)</th><th>Hourly coverage</th><th>Missing days (no hourly data)</th><th>Monthly fetched</th><th>Issue</th></tr></thead><tbody>` +
+    table.innerHTML = `<thead><tr><th>facility_id</th><th>Month</th><th>Status</th><th>Monthly report (kWh)</th><th>Hourly sum (kWh)</th><th>Diff (kWh)</th><th>Diff (%)</th><th>Hourly coverage</th><th>Missing days (no hourly data)</th><th>Monthly fetched</th><th>Details</th></tr></thead><tbody>` +
       rows.map(r => {
-        const muted = r.kind === "notExtracted" || r.kind === "monthlyMissing";
+        const st = COMPARE_STATUS[r.kind] || { label: r.kind, color: "var(--muted)" };
         return `
-        <tr style="${muted ? "opacity:.75;" : ""}">
+        <tr>
           <td>${escapeHtml(r.facilityId)}</td>
           <td style="white-space:nowrap;">${escapeHtml(r.month)}</td>
+          <td style="white-space:nowrap;color:${st.color};font-weight:600;">${st.label}</td>
           <td>${r.monthlyKwh}</td>
           <td>${r.hourlyKwh}</td>
           <td>${r.diffKwh}</td>
@@ -728,7 +751,7 @@ const App = (() => {
           <td style="white-space:nowrap;">${escapeHtml(r.hourlyCoverage || "")}</td>
           <td>${r.missingRanges ? escapeHtml(r.missingRanges).replace(/, /g, "<br>") : `<span style="color:var(--muted);">none</span>`}</td>
           <td style="white-space:nowrap;${r.monthlyStale ? "color:var(--warn);font-weight:600;" : ""}">${escapeHtml(r.monthlyAsOf || "")}${r.monthlyStale ? " ⚠" : ""}</td>
-          <td style="${r.kind === "zero" || (r.hasGap && r.complete) ? "color:var(--warn);" : "color:var(--muted);"}">${escapeHtml(r.issue)}</td>
+          <td style="color:var(--muted);">${escapeHtml(r.issue)}</td>
         </tr>`; }).join("") + `</tbody>`;
   }
 
@@ -751,12 +774,13 @@ const App = (() => {
     if (!lastCompareResult) return;
     const { conn, result } = lastCompareResult;
     Audit.log("Download comparison", conn.companyName, `${compareRows(result).length} row(s)`);
-    const headers = ["facility_id", "Month", "Monthly report (kWh)", "Hourly sum (kWh)", "Diff (kWh)", "Diff (%)", "Hourly coverage", "Missing days (no hourly data)", "Monthly fetched", "Issue"];
-    const rows = compareRows(result).map(r => [r.facilityId, r.month, r.monthlyKwh, r.hourlyKwh, r.diffKwh, r.diffPct,
+    const headers = ["facility_id", "Month", "Status", "Monthly report (kWh)", "Hourly sum (kWh)", "Diff (kWh)", "Diff (%)", "Hourly coverage", "Missing days (no hourly data)", "Monthly fetched", "Details"];
+    const rows = compareRows(result).map(r => [r.facilityId, r.month, (COMPARE_STATUS[r.kind] || {}).label || r.kind,
+      r.monthlyKwh, r.hourlyKwh, r.diffKwh, r.diffPct,
       r.hourlyCoverage || "", r.missingRanges || "none", r.monthlyAsOf || "", r.issue]);
-    if (!rows.length) rows.push(["No discrepancies found", "", "", "", "", "", "", "", "", ""]);
+    if (!rows.length) rows.push(["No data", "", "", "", "", "", "", "", "", "", ""]);
     const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-    ws["!cols"] = [10, 9, 14, 14, 11, 9, 13, 40, 13, 60].map(wch => ({ wch }));
+    ws["!cols"] = [10, 9, 18, 14, 14, 11, 9, 13, 40, 13, 60].map(wch => ({ wch }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "HourlyVsMonthly");
     XLSX.writeFile(wb, `${conn.companyName}_HourlyVsMonthly.xlsx`);
@@ -972,30 +996,157 @@ const App = (() => {
     const startDate = DatePicker.getISO(qs("extStart"));
     const endDate = DatePicker.getISO(qs("extEnd"));
     if (!startDate || !endDate) { alert("Pick a start and end date."); return; }
-    const today = new Date().toISOString().slice(0, 10);
+    if (endDate < startDate) { alert("End date is before start date — please fix the range."); return; }
+    if (!stationIds.length) { alert("Tick at least one station."); return; }
+    const today = localISODate(new Date()); // local date — toISOString() gave yesterday's date before 8am in UTC+8
     if (endDate > today) {
       alert("End date can't be in the future — data for days that haven't happened yet doesn't exist. Pick today or an earlier date.");
       return;
     }
-    queueExtractionJob(conn, resolution, stationIds, startDate, endDate);
+
+    // ---- extraction lock: don't re-fetch what's already in the Readings tab ----
+    const btn = qs("btnQueueExtraction");
+    if (btn) btn.disabled = true;
+    let plan;
+    try {
+      plan = await planExtraction(conn, resolution, stationIds, startDate, endDate);
+    } catch (e) {
+      if (btn) btn.disabled = false;
+      alert(`Could not check which dates are already extracted (${e.message}). Try again in a moment.`);
+      return;
+    }
+    if (btn) btn.disabled = false;
+
+    const rangeText = `${resolution} · ${startDate} → ${endDate} · ${stationIds.length} station(s)`;
+    if (!plan.done.length) { queueExtractionJob(conn, resolution, stationIds, startDate, endDate); return; }
+
+    const choice = await askExtractionLock(conn, resolution, plan);
+    if (choice === "missing") {
+      Audit.log("Extraction — already-extracted dates skipped", conn.companyName,
+        `${rangeText} · skipped ${plan.done.length}: ${plan.doneText} · fetching ${plan.missing.length}: ${plan.missingText}`);
+      const first = plan.missing[0], last = plan.missing[plan.missing.length - 1];
+      // Start/end narrowed to the missing span; anything already extracted inside it is skipped.
+      queueExtractionJob(conn, resolution, stationIds,
+        resolution === "Monthly" ? maxISO(first, startDate) : first,
+        resolution === "Monthly" ? minISO(monthEnd(last), endDate) : last,
+        { skipPoints: new Set(plan.done) });
+    } else if (choice === "all") {
+      Audit.log("Re-extraction (Admin override)", conn.companyName, `${rangeText} · ${plan.done.length} already-extracted ${plan.unit}(s) fetched again: ${plan.doneText}`);
+      queueExtractionJob(conn, resolution, stationIds, startDate, endDate);
+    } else {
+      Audit.log("Extraction blocked — already extracted", conn.companyName, `${rangeText} · ${plan.doneText}`);
+    }
+  }
+
+  /* ---------------------------- extraction lock ---------------------------- */
+  // A day (Hourly/Daily) or month (Monthly) counts as ALREADY EXTRACTED when
+  // every selected station has rows for it in the Readings tab AND those rows
+  // were fetched after that day/month had ended. So today, the current month,
+  // and anything fetched while it was still in progress are never locked —
+  // they may still be missing data and can always be fetched again.
+  function localISODate(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  function monthEnd(firstOfMonth) {
+    const [y, m] = firstOfMonth.split("-").map(Number);
+    return `${y}-${String(m).padStart(2, "0")}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, "0")}`;
+  }
+  const maxISO = (a, b) => (a > b ? a : b);
+  const minISO = (a, b) => (a < b ? a : b);
+
+  async function planExtraction(conn, resolution, stationIds, startDate, endDate) {
+    const points = ExtractionEngine.buildCursorPoints(conn.brand, resolution, startDate, endDate);
+    const readings = dedupeReadings(await SheetsClient.listReadings(conn.companyName));
+    const monthly = resolution === "Monthly";
+
+    // point -> Map(stationId -> newest RunAt local date for that point)
+    const seen = new Map();
+    for (const r of readings) {
+      if (String(r.resolution).trim() !== resolution) continue;
+      const m = String(r.timestamp).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (!m) continue;
+      const point = monthly ? `${m[1]}-${m[2]}-01` : `${m[1]}-${m[2]}-${m[3]}`;
+      if (!seen.has(point)) seen.set(point, new Map());
+      const byStation = seen.get(point);
+      const fetchedOn = r.runAt ? localISODate(new Date(r.runAt)) : "";
+      if (fetchedOn > (byStation.get(r.stationId) || "")) byStation.set(r.stationId, fetchedOn);
+    }
+
+    const done = [], missing = [];
+    for (const point of points) {
+      const lastDay = monthly ? monthEnd(point) : point;
+      const byStation = seen.get(point);
+      const complete = !!byStation && stationIds.every(st => (byStation.get(st) || "") > lastDay);
+      (complete ? done : missing).push(point);
+    }
+    const unit = monthly ? "month" : "day";
+    const fmt = (list) => monthly ? summarizeMonthPoints(list) : summarizeDayPoints(list);
+    return { points, done, missing, unit, doneText: fmt(done), missingText: fmt(missing) };
+  }
+
+  function summarizeDayPoints(days) {
+    if (!days.length) return "none";
+    const next = (s) => { const [y, m, d] = s.split("-").map(Number); return localISODate(new Date(y, m - 1, d + 1)); };
+    const out = []; let a = days[0], b = days[0];
+    for (const d of days.slice(1)) { if (d === next(b)) b = d; else { out.push(a === b ? a : `${a} → ${b}`); a = b = d; } }
+    out.push(a === b ? a : `${a} → ${b}`);
+    return out.join(", ");
+  }
+  function summarizeMonthPoints(months) {
+    if (!months.length) return "none";
+    return summarizeMonths(months.map(p => ({ facilityId: "", month: p.slice(0, 7) }))).replace(/^: /, "");
+  }
+
+  // Resolves "missing" | "all" | "cancel".
+  function askExtractionLock(conn, resolution, plan) {
+    const isAdmin = currentRole === "Admin";
+    const allDone = !plan.missing.length;
+    const unitPl = plan.unit + "(s)";
+    qs("extLockTitle").textContent = allDone ? "🔒 Already extracted" : "Some dates already extracted";
+    qs("extLockBody").innerHTML = `
+      <p><strong>${escapeHtml(conn.companyName)}</strong> · ${escapeHtml(resolution)}</p>
+      <p><strong>${plan.done.length} of ${plan.points.length} ${unitPl}</strong> in this range are already in the Readings tab for every selected station:</p>
+      <div class="callout" style="margin:6px 0 12px;">${escapeHtml(plan.doneText)}</div>
+      ${allDone
+        ? `<p>Nothing new to fetch.${isAdmin ? " As an Admin you can re-extract it anyway (e.g. if the vendor corrected its figures) — this is recorded in the audit log." : " Ask an Admin if this data needs to be re-extracted."}</p>`
+        : `<p><strong>${plan.missing.length} ${unitPl}</strong> still missing — only these will be fetched:</p>
+           <div class="callout" style="margin:6px 0 12px;">${escapeHtml(plan.missingText)}</div>`}
+      <p class="field-help" style="margin-top:4px;">Today, the current month, and anything fetched before it had ended are never locked.</p>`;
+    qs("btnExtLockMissing").hidden = allDone;
+    qs("btnExtLockAll").hidden = !isAdmin;
+    qs("btnExtLockAll").textContent = allDone ? "Re-extract anyway (Admin)" : "Re-extract everything (Admin)";
+    qs("btnExtLockCancel").textContent = allDone && !isAdmin ? "OK" : "Cancel";
+    qs("extLockOverlay").classList.add("active");
+    return new Promise(resolve => {
+      const done = (v) => {
+        qs("extLockOverlay").classList.remove("active");
+        ["btnExtLockMissing", "btnExtLockAll", "btnExtLockCancel", "btnExtLockClose"].forEach(id => { qs(id).onclick = null; });
+        resolve(v);
+      };
+      qs("btnExtLockMissing").onclick = () => done("missing");
+      qs("btnExtLockAll").onclick = () => done("all");
+      qs("btnExtLockCancel").onclick = () => done("cancel");
+      qs("btnExtLockClose").onclick = () => done("cancel");
+    });
   }
 
   // Shared by both "Queue extraction" (fresh, from the form) and "Resume"
   // (reconstructed from a persisted pendingJob, no form re-entry needed).
-  function queueExtractionJob(conn, resolution, stationIds, startDate, endDate) {
+  function queueExtractionJob(conn, resolution, stationIds, startDate, endDate, opts = {}) {
     const brand = BRANDS[conn.brand];
 
     // Created immediately so it shows up in the Jobs list right away, even
     // if it has to wait its turn behind another job that's already running.
     const jobRow = document.createElement("div");
     jobRow.className = "job-row";
-    jobRow.innerHTML = `<div class="job-title">${escapeHtml(conn.companyName)} · ${resolution} · ${startDate} → ${endDate}</div>
+    jobRow.innerHTML = `<div class="job-title">${escapeHtml(conn.companyName)} · ${resolution} · ${startDate} → ${endDate}${opts.skipPoints?.size ? ` <span style="color:var(--muted);font-weight:400;">· ${opts.skipPoints.size} already-extracted ${resolution === "Monthly" ? "month" : "day"}(s) skipped</span>` : ""}</div>
       <div class="job-bar"><div class="job-bar-fill"></div></div>
       <div class="job-status">${queueRunning || extractionQueue.length ? "Waiting for other extraction(s) to finish…" : "Starting…"}</div>`;
     qs("jobList").prepend(jobRow);
 
     const job = ExtractionEngine.createJob({
       connection: conn, brand: conn.brand, resolution, startDate, endDate, stationIds,
+      skipPoints: opts.skipPoints,
       onProgress: (j) => renderJobProgress(jobRow, j, startDate, endDate),
     });
     liveJobKeys.add(`${conn.id}|${resolution}`); // so a persisted "Resume" card for the same job doesn't also render
@@ -1358,7 +1509,7 @@ const App = (() => {
     const matches = (wc, p) => !!wc && [wc.y, wc.mo, wc.d, wc.H].every(Number.isFinite)
       && (!p || (wc.y === p.y && wc.mo === p.mo && wc.d === p.d && wc.H === p.H));
     return readings.map(r => {
-      const row = { ...r, kwh: r.kwh === "" || r.kwh == null ? r.kwh : Number(r.kwh) };
+      const row = { ...r, readableTimestamp: r.readableTimestamp ?? r.timestamp, kwh: r.kwh === "" || r.kwh == null ? r.kwh : Number(r.kwh) };
       const m = String(r.timestamp).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
       if (!m) return matches(safeWallClock(row, brandKey, off)) ? row : row; // old epoch rows etc. — leave as-is
       const [y, mo, d, H, Mi, S] = [m[1], m[2], m[3], m[4], m[5], m[6] || "0"].map(Number);
