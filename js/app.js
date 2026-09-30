@@ -897,8 +897,10 @@ const App = (() => {
     if (!conn) return;
     const resolution = qs("extResolution").value;
     const cursorDate = conn.cursor?.[resolution];
-    if (cursorDate && !DatePicker.getISO(qs("extStart"))) {
-      DatePicker.setFromISO(qs("extStart"), cursorDate);
+    // The cursor is the last day/month already fetched, so suggest the one after it.
+    const suggested = ExtractionEngine.nextStartAfter(resolution, cursorDate);
+    if (suggested && !DatePicker.getISO(qs("extStart"))) {
+      DatePicker.setFromISO(qs("extStart"), suggested);
     }
   }
 
@@ -1002,9 +1004,16 @@ const App = (() => {
       }
       const ctx = { call: ProxyClient.call, auth };
 
+      // Snapshot so the cursor can be rolled back if the Sheet sync fails —
+      // otherwise Resume would skip days whose rows never got saved.
+      const cursorBefore = JSON.parse(JSON.stringify(conn.cursor || {}));
+      let syncFailed = false;
+
       await ExtractionEngine.run(job.id, ctx);
 
-      if ((job.status === "done" || job.status === "paused" || job.status === "stopped") && job.rowsCollected.length) {
+      // "error" included: rows fetched before the error are valid and the
+      // cursor has already moved past them, so they must be saved too.
+      if (["done", "paused", "stopped", "error"].includes(job.status) && job.rowsCollected.length) {
         try {
           const utcOffset = conn.templateSettings?.utcOffset ?? 8;
           await SheetsClient.appendReadings(job.rowsCollected.map(r => ({
@@ -1014,17 +1023,19 @@ const App = (() => {
           })));
           jobRow.querySelector(".job-status").textContent += " · Synced to Google Sheet";
         } catch (e) {
-          jobRow.querySelector(".job-status").textContent += ` · Sheet sync failed (${e.message})`;
+          syncFailed = true;
+          jobRow.querySelector(".job-status").textContent += ` · Sheet sync failed (${e.message}) — progress not saved, this range will be fetched again on the next run`;
         }
       }
-      conn.cursor = job.connection.cursor;
-      if (job.status === "done") {
+      conn.cursor = syncFailed ? cursorBefore : job.connection.cursor;
+      job.connection.cursor = conn.cursor;
+      if (job.status === "done" && !syncFailed) {
         delete conn.pendingJob[resolution]; // fully caught up — nothing left to resume
       }
       await SheetsClient.saveConnection(conn).catch(() => {});
       Audit.log("Data extraction", conn.companyName,
         `${resolution} · ${startDate} → ${endDate} · ${stationIds.length} station(s) · Status: ${job.status} · ${job.rowsCollected.length} row(s)`
-        + (jobRow.querySelector(".job-status").textContent.includes("Sheet sync failed") ? " · Sheet sync FAILED" : ""));
+        + (syncFailed ? " · Sheet sync FAILED (cursor not advanced)" : ""));
       job._downloadRows = job.rowsCollected;
       jobRow._job = job;
     });
@@ -1047,12 +1058,24 @@ const App = (() => {
         if (liveJobKeys.has(key)) continue;
         liveJobKeys.add(key);
 
-        const effectiveStart = conn.cursor?.[resolution] || pending.startDate;
+        // Resume from the day/month AFTER the last one fetched (resuming AT the
+        // cursor re-fetched it — the source of the duplicate boundary days).
+        // A cursor from before this job's start (left over from an older run)
+        // is ignored so the job's own start date is honoured.
+        const cursor = conn.cursor?.[resolution];
+        const effectiveStart = cursor && cursor >= pending.startDate
+          ? ExtractionEngine.nextStartAfter(resolution, cursor)
+          : pending.startDate;
+        if (effectiveStart > pending.endDate) {
+          delete conn.pendingJob[resolution]; // everything in range was already fetched
+          SheetsClient.saveConnection(conn).catch(() => {});
+          continue;
+        }
         const jobRow = document.createElement("div");
         jobRow.className = "job-row";
         jobRow.innerHTML = `<div class="job-title">${escapeHtml(conn.companyName)} · ${resolution} · ${pending.startDate} → ${pending.endDate}</div>
           <div class="job-bar"><div class="job-bar-fill"></div></div>
-          <div class="job-status">Unfinished from a previous session — currently caught up to ${escapeHtml(effectiveStart)}.</div>`;
+          <div class="job-status">Unfinished from a previous session — ${cursor && cursor >= pending.startDate ? `fetched up to ${escapeHtml(cursor)}, ` : ""}resumes from ${escapeHtml(effectiveStart)}.</div>`;
         const resumeThis = () => {
           const idx = pendingResumeActions.indexOf(resumeThis);
           if (idx !== -1) pendingResumeActions.splice(idx, 1);
