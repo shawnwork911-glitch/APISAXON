@@ -457,6 +457,22 @@ tbody tr:last-child td{border-bottom:none;}
   </div>
 </div>
 
+<!-- Extraction lock -->
+<div class="modal-overlay" id="extLockOverlay" style="z-index:60;">
+  <div class="modal" style="max-width:560px;margin-top:10vh;">
+    <div class="modal-top">
+      <h3 id="extLockTitle">Already extracted</h3>
+      <button class="modal-close" id="btnExtLockClose">✕</button>
+    </div>
+    <div id="extLockBody" style="font-size:.88rem;line-height:1.5;"></div>
+    <div class="modal-actions">
+      <button class="btn" id="btnExtLockCancel">Cancel</button>
+      <button class="btn" id="btnExtLockAll" hidden>Re-extract everything (Admin)</button>
+      <button class="btn btn-primary" id="btnExtLockMissing">Fetch missing only</button>
+    </div>
+  </div>
+</div>
+
 <!-- Settings password lock -->
 <div class="modal-overlay" id="settingsLockOverlay" style="z-index:60;">
   <div class="modal" style="max-width:380px;margin-top:12vh;">
@@ -497,15 +513,15 @@ tbody tr:last-child td{border-bottom:none;}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client"></script>
-<script src="js/brands.js?v=20260930e"></script>
-<script src="js/signing.js?v=20260930e"></script>
-<script src="js/auth-client.js?v=20260930e"></script>
-<script src="js/proxy-client.js?v=20260930e"></script>
-<script src="js/datepicker.js?v=20260930e"></script>
-<script src="js/sheets-client.js?v=20260930e"></script>
-<script src="js/templates.js?v=20260930e"></script>
-<script src="js/compare.js?v=20260930e"></script>
-<script src="js/extraction.js?v=20260930e"></script>
-<script src="js/app.js?v=20260930e"></script>
+<script src="js/brands.js?v=20260930g"></script>
+<script src="js/signing.js?v=20260930g"></script>
+<script src="js/auth-client.js?v=20260930g"></script>
+<script src="js/proxy-client.js?v=20260930g"></script>
+<script src="js/datepicker.js?v=20260930g"></script>
+<script src="js/sheets-client.js?v=20260930g"></script>
+<script src="js/templates.js?v=20260930g"></script>
+<script src="js/compare.js?v=20260930g"></script>
+<script src="js/extraction.js?v=20260930g"></script>
+<script src="js/app.js?v=20260930g"></script>
 </body>
 </html>
