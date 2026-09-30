@@ -68,6 +68,10 @@ const SheetsClient = (() => {
   async function listReadings(company, { fromDate, toDate } = {}) {
     return call("listReadings", { company, ...(fromDate ? { fromDate } : {}), ...(toDate ? { toDate } : {}) });
   }
+  // Per-resolution row count, earliest/latest date and months with data — without the rows.
+  async function readingsSummary(company) {
+    return call("readingsSummary", { company });
+  }
   // Audit tab: Timestamp | User | Role | Action | Company | Details
   async function appendAudit(entries) {
     return call("appendAudit", { entries });
@@ -76,5 +80,5 @@ const SheetsClient = (() => {
     return call("listAudit");
   }
 
-  return { loadConfig, saveConfig, isConfigured, sheetUrl, whoAmI, listConnections, saveConnection, deleteConnection, appendReadings, listReadings, appendAudit, listAudit };
+  return { loadConfig, saveConfig, isConfigured, sheetUrl, whoAmI, listConnections, saveConnection, deleteConnection, appendReadings, listReadings, readingsSummary, appendAudit, listAudit };
 })();

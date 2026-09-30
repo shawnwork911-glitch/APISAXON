@@ -309,11 +309,22 @@ const App = (() => {
     const table = qs("stationsModalDataStoredTable");
     table.innerHTML = `<tbody><tr><td class="field-help">Loading…</td></tr></tbody>`;
     try {
-      const readings = dedupeReadings(await SheetsClient.listReadings(conn.companyName));
-      renderDataStoredTable(table, readings);
+      renderDataStoredSummary(table, await getReadingsSummary(conn));
     } catch (e) {
       table.innerHTML = `<tbody><tr><td class="field-help">Could not load: ${escapeHtml(e.message)}</td></tr></tbody>`;
     }
+  }
+
+  function renderDataStoredSummary(table, summary) {
+    const order = ["Hourly", "Daily", "Monthly"];
+    const keys = Object.keys(summary || {}).sort((a, b) => ((order.indexOf(a) + 1) || 99) - ((order.indexOf(b) + 1) || 99));
+    if (!keys.length) {
+      table.innerHTML = `<tbody><tr><td class="field-help">Nothing extracted yet for this company.</td></tr></tbody>`;
+      return;
+    }
+    table.innerHTML = `<thead><tr><th>Resolution</th><th>Rows</th><th>Earliest</th><th>Latest</th></tr></thead><tbody>` +
+      keys.map(k => `<tr><td>${escapeHtml(k)}</td><td>${summary[k].rows}</td><td>${escapeHtml(summary[k].earliest)}</td><td>${escapeHtml(summary[k].latest)}</td></tr>`).join("") +
+      `</tbody>`;
   }
 
   function renderDataStoredTable(table, readings) {
@@ -619,41 +630,125 @@ const App = (() => {
 
   function populateCompareCompanySelect() {
     const sel = qs("cmpCompany");
+    const keep = sel.value;
     sel.innerHTML = `<option value="">Select a company…</option>`;
     connections.forEach(c => {
       const opt = document.createElement("option");
       opt.value = c.id; opt.textContent = `${c.companyName} (${BRANDS[c.brand].label})`;
       sel.appendChild(opt);
     });
+    if (keep && connections.some(c => c.id === keep)) sel.value = keep;
+    if (!sel.dataset.periodHooked) {
+      sel.dataset.periodHooked = "1";
+      sel.addEventListener("change", refreshComparePeriods);
+    }
+    refreshComparePeriods();
   }
 
-  // Compare period: pick a quarter (the usual case) and From/To fill in and
-  // lock to it; pick "Custom range" to set any From/To month yourself.
-  // Quarters: Q1 = Jan–Mar, Q2 = Apr–Jun, Q3 = Jul–Sep, Q4 = Oct–Dec.
-  // Default: the current quarter.
+  // What's been extracted for a company, per resolution: { Hourly: { rows,
+  // earliest, latest, months: ["2026-07", …] }, Monthly: {…} }. Uses the
+  // proxy's light readingsSummary action; falls back to reading the rows if
+  // the proxy hasn't been updated with it yet.
+  async function getReadingsSummary(conn) {
+    try {
+      return await SheetsClient.readingsSummary(conn.companyName);
+    } catch (e) {
+      if (!/Unknown action/i.test(e.message)) throw e;
+      const out = {};
+      for (const r of dedupeReadings(await SheetsClient.listReadings(conn.companyName))) {
+        const d = extractDateOnly(r.timestamp);
+        if (!d) continue;
+        const res = String(r.resolution).trim();
+        const s = out[res] || (out[res] = { rows: 0, earliest: d, latest: d, months: [] });
+        s.rows++;
+        if (d < s.earliest) s.earliest = d;
+        if (d > s.latest) s.latest = d;
+        if (!s.months.includes(d.slice(0, 7))) s.months.push(d.slice(0, 7));
+      }
+      Object.values(out).forEach(s => s.months.sort());
+      return out;
+    }
+  }
+
+  // Compare period. The list is built from what's actually been extracted
+  // for the selected company, from January of THIS year onwards:
+  //   - a quarter is offered only if it contains Hourly or Monthly data;
+  //   - each shows how many of its months have Hourly / Monthly data;
+  //   - "Custom range…" From/To months run from the first to the last month
+  //     with data (this year onwards).
+  // Picking a quarter fills in From/To and locks them. Default: the latest
+  // quarter that has data. Quarters: Q1 Jan–Mar, Q2 Apr–Jun, Q3 Jul–Sep, Q4 Oct–Dec.
+  const QUARTER_MONTHS = ["Jan–Mar", "Apr–Jun", "Jul–Sep", "Oct–Dec"];
+  let comparePeriodSeq = 0;
+
   function populateCompareMonthSelects() {
-    const now = new Date();
-    const curY = now.getFullYear(), curM = now.getMonth() + 1;
+    qs("cmpPeriod").addEventListener("change", applyComparePeriod);
+    setComparePeriodPlaceholder("Select a company first");
+  }
+
+  function setComparePeriodPlaceholder(text) {
+    qs("cmpPeriod").innerHTML = `<option value="">${escapeHtml(text)}</option>`;
+    qs("cmpPeriod").disabled = true;
+    ["cmpFromMonth", "cmpToMonth"].forEach(id => { qs(id).innerHTML = ""; qs(id).disabled = true; });
+    qs("btnRunCompare").disabled = true;
+  }
+
+  async function refreshComparePeriods() {
+    const conn = connections.find(c => c.id === qs("cmpCompany").value);
+    if (!conn) { setComparePeriodPlaceholder("Select a company first"); return; }
+    const seq = ++comparePeriodSeq; // ignore answers for a company that's no longer selected
+    const keep = qs("cmpPeriod").value;
+    setComparePeriodPlaceholder("Checking extracted dates…");
+    let summary;
+    try {
+      summary = await getReadingsSummary(conn);
+    } catch (e) {
+      if (seq === comparePeriodSeq) setComparePeriodPlaceholder(`Could not load dates (${e.message})`);
+      return;
+    }
+    if (seq !== comparePeriodSeq) return;
+
+    const yearStart = `${new Date().getFullYear()}-01`;
+    const monthsOf = (res) => new Set((summary[res]?.months || []).filter(m => m >= yearStart));
+    const hourly = monthsOf("Hourly"), monthly = monthsOf("Monthly");
+    const withData = [...new Set([...hourly, ...monthly])].sort();
+    if (!withData.length) {
+      setComparePeriodPlaceholder(`No Hourly or Monthly data extracted for ${new Date().getFullYear()} yet`);
+      return;
+    }
+
+    // Quarters that contain data, newest first.
+    const now = new Date(), curKey = `Q${Math.ceil((now.getMonth() + 1) / 3)}-${now.getFullYear()}`;
+    const quarters = new Map();
+    for (const m of withData) {
+      const [y, mo] = m.split("-").map(Number);
+      const key = `Q${Math.ceil(mo / 3)}-${y}`;
+      if (!quarters.has(key)) quarters.set(key, { y, q: Math.ceil(mo / 3) });
+    }
+    const opts = [...quarters.entries()].sort((a, b) => (b[1].y - a[1].y) || (b[1].q - a[1].q)).map(([key, { y, q }]) => {
+      const qMonths = [0, 1, 2].map(i => `${y}-${String(q * 3 - 2 + i).padStart(2, "0")}`);
+      const h = qMonths.filter(m => hourly.has(m)).length, mo = qMonths.filter(m => monthly.has(m)).length;
+      return `<option value="${key}">Q${q} ${y} (${QUARTER_MONTHS[q - 1]}) · Hourly ${h}/3 · Monthly ${mo}/3${key === curKey ? " · in progress" : ""}</option>`;
+    });
+    qs("cmpPeriod").innerHTML = opts.join("") + `<option value="custom">Custom range…</option>`;
+    qs("cmpPeriod").disabled = false;
+
+    // Custom-range months: first → last month with data, continuous.
     const months = [];
-    for (let y = curY, m = curM; y >= 2020; ) {
-      months.push(`${y}-${String(m).padStart(2, "0")}`);
-      if (--m < 1) { m = 12; y--; }
+    for (let [y, m] = withData[0].split("-").map(Number); ; ) {
+      const v = `${y}-${String(m).padStart(2, "0")}`;
+      months.push(v);
+      if (v >= withData[withData.length - 1]) break;
+      if (++m > 12) { m = 1; y++; }
     }
     const label = (v) => { const [y, m] = v.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleString("en-GB", { month: "short", year: "numeric" }); };
-    const html = months.map(v => `<option value="${v}">${label(v)}</option>`).join("");
+    const tag = (v) => [hourly.has(v) && "H", monthly.has(v) && "M"].filter(Boolean).join("+") || "no data";
+    const html = months.slice().reverse().map(v => `<option value="${v}">${label(v)} (${tag(v)})</option>`).join("");
     qs("cmpFromMonth").innerHTML = html;
     qs("cmpToMonth").innerHTML = html;
 
-    const curQ = Math.ceil(curM / 3);
-    const quarters = [];
-    for (let y = curY, q = curQ; y >= 2020; ) {
-      const inProgress = y === curY && q === curQ;
-      quarters.push(`<option value="Q${q}-${y}">Q${q} ${y} (${["Jan–Mar", "Apr–Jun", "Jul–Sep", "Oct–Dec"][q - 1]})${inProgress ? " — in progress" : ""}</option>`);
-      if (--q < 1) { q = 4; y--; }
-    }
-    qs("cmpPeriod").innerHTML = quarters.join("") + `<option value="custom">Custom range…</option>`;
-    qs("cmpPeriod").value = `Q${curQ}-${curY}`;
-    qs("cmpPeriod").addEventListener("change", applyComparePeriod);
+    qs("cmpPeriod").value = [...qs("cmpPeriod").options].some(o => o.value === keep) ? keep : qs("cmpPeriod").options[0].value;
+    qs("btnRunCompare").disabled = false;
     applyComparePeriod();
   }
 
@@ -662,14 +757,22 @@ const App = (() => {
     const custom = v === "custom";
     qs("cmpFromMonth").disabled = !custom;
     qs("cmpToMonth").disabled = !custom;
-    if (custom) return;
-    const [, q, y] = v.match(/^Q(\d)-(\d{4})$/).map(Number);
-    const first = `${y}-${String(q * 3 - 2).padStart(2, "0")}`;
-    let last = `${y}-${String(q * 3).padStart(2, "0")}`;
-    // In-progress quarter: the To list stops at the current month.
-    if (![...qs("cmpToMonth").options].some(o => o.value === last)) last = qs("cmpToMonth").options[0].value;
-    qs("cmpFromMonth").value = first;
-    qs("cmpToMonth").value = last;
+    const avail = [...qs("cmpToMonth").options].map(o => o.value); // newest first
+    if (!avail.length) return;
+    if (custom) {
+      if (!qs("cmpFromMonth").value) qs("cmpFromMonth").value = avail[avail.length - 1];
+      if (!qs("cmpToMonth").value) qs("cmpToMonth").value = avail[0];
+      return;
+    }
+    const m = v.match(/^Q(\d)-(\d{4})$/);
+    if (!m) return;
+    const q = +m[1], y = +m[2];
+    const qMonths = [0, 1, 2].map(i => `${y}-${String(q * 3 - 2 + i).padStart(2, "0")}`);
+    // Clamp the quarter to months that exist in the list (e.g. an in-progress quarter).
+    const inList = qMonths.filter(x => avail.includes(x));
+    const first = inList[0] || qMonths[0], last = inList[inList.length - 1] || qMonths[2];
+    if (avail.includes(first)) qs("cmpFromMonth").value = first;
+    if (avail.includes(last)) qs("cmpToMonth").value = last;
   }
 
   // "Q3 2026" for a quarter, "2026-02 → 2026-05" for a custom range.
@@ -683,8 +786,13 @@ const App = (() => {
     const id = qs("cmpCompany").value;
     const conn = connections.find(c => c.id === id);
     if (!conn) { alert("Pick a company first."); return; }
-    const fromMonth = qs("cmpFromMonth").value, toMonth = qs("cmpToMonth").value;
-    if (!fromMonth || !toMonth) { alert("Pick a From and To month."); return; }
+    let fromMonth = qs("cmpFromMonth").value, toMonth = qs("cmpToMonth").value;
+    const qm = qs("cmpPeriod").value.match(/^Q(\d)-(\d{4})$/);
+    if (qm) { // a quarter always compares its full 3 months
+      fromMonth = `${qm[2]}-${String(+qm[1] * 3 - 2).padStart(2, "0")}`;
+      toMonth = `${qm[2]}-${String(+qm[1] * 3).padStart(2, "0")}`;
+    }
+    if (!fromMonth || !toMonth) { alert("Pick a period first."); return; }
     if (toMonth < fromMonth) { alert("To month is before From month — please fix the range."); return; }
     const fromDate = `${fromMonth}-01`, toDate = monthEnd(`${toMonth}-01`);
     const periodLabel = comparePeriodLabel(fromMonth, toMonth);
