@@ -130,6 +130,7 @@ const App = (() => {
     document.querySelectorAll(".nav-btn[data-view]").forEach(btn => {
       btn.addEventListener("click", () => showView(btn.dataset.view));
     });
+    populateCompareMonthSelects();
     qs("btnSettingsUnlock").addEventListener("click", handleSettingsUnlock);
     qs("settingsPasswordInput").addEventListener("keydown", (e) => { if (e.key === "Enter") handleSettingsUnlock(); });
     qs("btnSettingsLockCancel").addEventListener("click", closeSettingsLock);
@@ -626,17 +627,76 @@ const App = (() => {
     });
   }
 
+  // Compare period: pick a quarter (the usual case) and From/To fill in and
+  // lock to it; pick "Custom range" to set any From/To month yourself.
+  // Quarters: Q1 = Jan–Mar, Q2 = Apr–Jun, Q3 = Jul–Sep, Q4 = Oct–Dec.
+  // Default: the current quarter.
+  function populateCompareMonthSelects() {
+    const now = new Date();
+    const curY = now.getFullYear(), curM = now.getMonth() + 1;
+    const months = [];
+    for (let y = curY, m = curM; y >= 2020; ) {
+      months.push(`${y}-${String(m).padStart(2, "0")}`);
+      if (--m < 1) { m = 12; y--; }
+    }
+    const label = (v) => { const [y, m] = v.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleString("en-GB", { month: "short", year: "numeric" }); };
+    const html = months.map(v => `<option value="${v}">${label(v)}</option>`).join("");
+    qs("cmpFromMonth").innerHTML = html;
+    qs("cmpToMonth").innerHTML = html;
+
+    const curQ = Math.ceil(curM / 3);
+    const quarters = [];
+    for (let y = curY, q = curQ; y >= 2020; ) {
+      const inProgress = y === curY && q === curQ;
+      quarters.push(`<option value="Q${q}-${y}">Q${q} ${y} (${["Jan–Mar", "Apr–Jun", "Jul–Sep", "Oct–Dec"][q - 1]})${inProgress ? " — in progress" : ""}</option>`);
+      if (--q < 1) { q = 4; y--; }
+    }
+    qs("cmpPeriod").innerHTML = quarters.join("") + `<option value="custom">Custom range…</option>`;
+    qs("cmpPeriod").value = `Q${curQ}-${curY}`;
+    qs("cmpPeriod").addEventListener("change", applyComparePeriod);
+    applyComparePeriod();
+  }
+
+  function applyComparePeriod() {
+    const v = qs("cmpPeriod").value;
+    const custom = v === "custom";
+    qs("cmpFromMonth").disabled = !custom;
+    qs("cmpToMonth").disabled = !custom;
+    if (custom) return;
+    const [, q, y] = v.match(/^Q(\d)-(\d{4})$/).map(Number);
+    const first = `${y}-${String(q * 3 - 2).padStart(2, "0")}`;
+    let last = `${y}-${String(q * 3).padStart(2, "0")}`;
+    // In-progress quarter: the To list stops at the current month.
+    if (![...qs("cmpToMonth").options].some(o => o.value === last)) last = qs("cmpToMonth").options[0].value;
+    qs("cmpFromMonth").value = first;
+    qs("cmpToMonth").value = last;
+  }
+
+  // "Q3 2026" for a quarter, "2026-02 → 2026-05" for a custom range.
+  function comparePeriodLabel(fromMonth, toMonth) {
+    const v = qs("cmpPeriod").value;
+    if (v !== "custom") { const [, q, y] = v.match(/^Q(\d)-(\d{4})$/); return `Q${q} ${y}`; }
+    return fromMonth === toMonth ? fromMonth : `${fromMonth} → ${toMonth}`;
+  }
+
   async function handleRunCompare() {
     const id = qs("cmpCompany").value;
     const conn = connections.find(c => c.id === id);
     if (!conn) { alert("Pick a company first."); return; }
+    const fromMonth = qs("cmpFromMonth").value, toMonth = qs("cmpToMonth").value;
+    if (!fromMonth || !toMonth) { alert("Pick a From and To month."); return; }
+    if (toMonth < fromMonth) { alert("To month is before From month — please fix the range."); return; }
+    const fromDate = `${fromMonth}-01`, toDate = monthEnd(`${toMonth}-01`);
+    const periodLabel = comparePeriodLabel(fromMonth, toMonth);
 
     qs("btnRunCompare").disabled = true;
     qs("cmpStatus").textContent = "Reading Hourly and Monthly rows from your Google Sheet…";
     qs("cmpResultsCard").hidden = true;
 
     try {
-      const rawReadings = dedupeReadings(await SheetsClient.listReadings(conn.companyName));
+      // Range is also applied here, in case an older proxy ignores fromDate/toDate.
+      const rawReadings = dedupeReadings(await SheetsClient.listReadings(conn.companyName, { fromDate, toDate }))
+        .filter(r => { const d = String(r.timestamp).trim().slice(0, 10); return !/^\d{4}-\d{2}-\d{2}$/.test(d) || (d >= fromDate && d <= toDate); });
       const readings = normalizeReadingsForTemplates(rawReadings, conn.brand, conn.templateSettings?.utcOffset);
       let result = CompareEngine.compareHourlyVsMonthly(readings, conn);
       // If the engine parses the readable "YYYY-MM-DD HH:MM:SS" strings itself
@@ -648,10 +708,10 @@ const App = (() => {
         const alt = CompareEngine.compareHourlyVsMonthly(rawReadings.map(r => ({ ...r, kwh: Number(r.kwh) })), conn);
         if (alt.hourlyMonths.length + alt.monthlyMonths.length > result.hourlyMonths.length + result.monthlyMonths.length) result = alt;
       }
-      lastCompareResult = { conn, result };
+      lastCompareResult = { conn, result, periodLabel };
       renderCompareResults(conn, result);
-      qs("cmpStatus").textContent = `Done — ${readings.length} row(s) read.`;
-      Audit.log("Comparison", conn.companyName, `Hourly vs Monthly · ${result.totalChecked} facility-month(s) checked · ${result.flagged.length} need attention · ${(result.notExtracted || []).length} hourly not extracted · ${(result.monthlyMissing || []).length} monthly missing`);
+      qs("cmpStatus").textContent = `Done — ${readings.length} row(s) read for ${periodLabel}${periodLabel.startsWith("Q") ? ` (${fromMonth} → ${toMonth})` : ""}.`;
+      Audit.log("Comparison", conn.companyName, `Hourly vs Monthly · ${periodLabel} · ${result.totalChecked} facility-month(s) checked · ${result.flagged.length} need attention · ${(result.notExtracted || []).length} hourly not extracted · ${(result.monthlyMissing || []).length} monthly missing`);
     } catch (e) {
       qs("cmpStatus").textContent = `Failed: ${e.message}`;
     }
@@ -834,7 +894,8 @@ const App = (() => {
     ws["!cols"] = [10, 9, 18, 14, 14, 11, 9, 13, 40, 13, 60].map(wch => ({ wch }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "HourlyVsMonthly");
-    XLSX.writeFile(wb, `${conn.companyName}_HourlyVsMonthly.xlsx`);
+    const period = (lastCompareResult.periodLabel || "").replace(/\s*→\s*/g, "_to_").replace(/\s+/g, "_");
+    XLSX.writeFile(wb, `${conn.companyName}_HourlyVsMonthly${period ? `_${period}` : ""}.xlsx`);
   }
 
   /* ---------------------------- export (Template 1/2 from stored Readings) ---------------------------- */
@@ -870,7 +931,8 @@ const App = (() => {
     qs("expResultsCard").hidden = true;
 
     try {
-      const rawReadings = dedupeReadings(await SheetsClient.listReadings(conn.companyName));
+      const rawReadings = dedupeReadings(await SheetsClient.listReadings(conn.companyName,
+        { fromDate: `${startDate.slice(0, 7)}-01`, toDate: endDate }));
       const brandKey = conn.brand;
       const readings = normalizeReadingsForTemplates(rawReadings, brandKey, conn.templateSettings?.utcOffset);
 
@@ -1107,7 +1169,8 @@ const App = (() => {
 
   async function planExtraction(conn, resolution, stationIds, startDate, endDate) {
     const points = ExtractionEngine.buildCursorPoints(conn.brand, resolution, startDate, endDate);
-    const readings = dedupeReadings(await SheetsClient.listReadings(conn.companyName));
+    const readings = dedupeReadings(await SheetsClient.listReadings(conn.companyName,
+      { fromDate: `${startDate.slice(0, 7)}-01`, toDate: resolution === "Monthly" ? monthEnd(`${endDate.slice(0, 7)}-01`) : endDate }));
     const monthly = resolution === "Monthly";
 
     // point -> Map(stationId -> newest RunAt local date for that point)

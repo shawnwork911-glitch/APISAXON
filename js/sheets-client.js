@@ -63,8 +63,10 @@ const SheetsClient = (() => {
   async function appendReadings(rows) {
     return call("appendReadings", { rows });
   }
-  async function listReadings(company) {
-    return call("listReadings", { company });
+  // fromDate / toDate ("YYYY-MM-DD", inclusive) are optional — when given, the
+  // proxy only reads rows in that range instead of the company's whole history.
+  async function listReadings(company, { fromDate, toDate } = {}) {
+    return call("listReadings", { company, ...(fromDate ? { fromDate } : {}), ...(toDate ? { toDate } : {}) });
   }
   // Audit tab: Timestamp | User | Role | Action | Company | Details
   async function appendAudit(entries) {
