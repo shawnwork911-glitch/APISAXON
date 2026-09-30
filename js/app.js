@@ -651,11 +651,33 @@ const App = (() => {
       lastCompareResult = { conn, result };
       renderCompareResults(conn, result);
       qs("cmpStatus").textContent = `Done — ${readings.length} row(s) read.`;
-      Audit.log("Comparison", conn.companyName, `Hourly vs Monthly · ${result.totalChecked} facility-month(s) checked · ${result.flagged.length} flagged · ${(result.notExtracted || []).length} not extracted`);
+      Audit.log("Comparison", conn.companyName, `Hourly vs Monthly · ${result.totalChecked} facility-month(s) checked · ${result.flagged.length} need attention · ${(result.notExtracted || []).length} hourly not extracted · ${(result.monthlyMissing || []).length} monthly missing`);
     } catch (e) {
       qs("cmpStatus").textContent = `Failed: ${e.message}`;
     }
     qs("btnRunCompare").disabled = false;
+  }
+
+  // One list of every row the Compare results show (and download): months
+  // needing attention, months with no hourly data, months with no Monthly figure.
+  function compareRows(result) {
+    return [
+      ...result.flagged,
+      ...(result.notExtracted || []).map(r => ({
+        facilityId: r.facilityId, month: r.month, kind: "notExtracted",
+        monthlyKwh: r.monthlyKwh, hourlyKwh: "", diffKwh: "", diffPct: "",
+        hourlyCoverage: "0 days", missingRanges: r.missingRanges || "whole month",
+        monthlyAsOf: r.monthlyAsOf || "", monthlyStale: false, complete: false,
+        issue: "Hourly not extracted for this month — not checked",
+      })),
+      ...(result.monthlyMissing || []).map(r => ({
+        facilityId: r.facilityId, month: r.month, kind: "monthlyMissing",
+        monthlyKwh: "", hourlyKwh: r.hourlyKwh, diffKwh: "", diffPct: "",
+        hourlyCoverage: r.hourlyCoverage, missingRanges: "",
+        monthlyAsOf: "", monthlyStale: false, complete: true,
+        issue: "No Monthly figure for this month — run a Monthly extraction to compare",
+      })),
+    ];
   }
 
   function renderCompareResults(conn, result) {
@@ -663,39 +685,51 @@ const App = (() => {
     const noHourly = !result.hourlyMonths.length;
     const noMonthly = !result.monthlyMonths.length;
     const notExtracted = result.notExtracted || [];
-    let summary = `Checked ${result.totalChecked} facility-month combination(s). `;
-    if (noHourly || noMonthly) {
-      summary += `<strong style="color:var(--warn);">Missing ${noHourly ? "Hourly" : "Monthly"} data entirely for this company — run that extraction first.</strong>`;
-    } else if (!result.flagged.length) {
-      summary += `<span style="color:var(--ok);">No discrepancies found — hourly and monthly figures match for every checked month.</span>`;
-    } else {
-      const incomplete = result.flagged.filter(f => f.complete === false).length;
-      summary += `<strong style="color:var(--warn);">${result.flagged.length} month(s) flagged</strong>`
-        + (incomplete ? ` — ${incomplete} of them only because Hourly doesn't cover the whole month yet.` : ".");
-    }
-    if (notExtracted.length && !noHourly) {
-      summary += `<div style="margin-top:8px;">Not checked — Monthly exists but Hourly was never extracted for: `
-        + `<strong>${escapeHtml(summarizeMonths(notExtracted))}</strong>. Run an Hourly extraction for those dates to include them.</div>`;
-    }
-    qs("cmpSummary").innerHTML = summary;
+    const monthlyMissing = result.monthlyMissing || [];
+    const gaps = result.flagged.filter(f => f.hasGap && f.complete);
+    const incomplete = result.flagged.filter(f => !f.complete);
+    const zero = result.flagged.filter(f => f.kind === "zero");
+    const stale = result.flagged.filter(f => f.monthlyStale);
 
-    const table = qs("cmpResultsTable");
-    if (!result.flagged.length) {
-      table.innerHTML = "";
-      return;
+    const lines = [];
+    let head = `Checked ${result.totalChecked} facility-month combination(s). `;
+    if (noHourly || noMonthly) {
+      head += `<strong style="color:var(--warn);">Missing ${noHourly ? "Hourly" : "Monthly"} data entirely for this company — run that extraction first.</strong>`;
+    } else if (!result.flagged.length) {
+      head += `<span style="color:var(--ok);">Every checked month is complete and hourly matches monthly.</span>`;
+    } else {
+      head += gaps.length
+        ? `<strong style="color:var(--warn);">${gaps.length} month(s) with a kWh gap.</strong>`
+        : `<span style="color:var(--ok);">No kWh gaps in fully-covered months.</span>`;
     }
-    table.innerHTML = `<thead><tr><th>facility_id</th><th>Month</th><th>Monthly report (kWh)</th><th>Hourly sum (kWh)</th><th>Diff (kWh)</th><th>Diff (%)</th><th>Hourly coverage</th><th>Issue</th></tr></thead><tbody>` +
-      result.flagged.map(r => `
-        <tr>
+    lines.push(head);
+    if (incomplete.length) lines.push(`<span style="color:var(--warn);">${incomplete.length} month(s) with hourly data missing for some days</span> — see "Missing days" below.`);
+    if (zero.length) lines.push(`<span style="color:var(--warn);">⚠ ${zero.length} month(s) show 0 kWh in both Monthly and Hourly (${escapeHtml(summarizeMonths(zero))})</span> — the plant may have been offline or not reporting.`);
+    if (stale.length) lines.push(`<span style="color:var(--warn);">⚠ ${stale.length} Monthly figure(s) were fetched before that month's hourly data ended (${escapeHtml([...new Set(stale.map(f => f.month))].join(", "))})</span>, so they can't include the later days. Re-run the Monthly extraction for those month(s).`);
+    if (notExtracted.length && !noHourly) lines.push(`Hourly not extracted (whole month missing): <strong>${escapeHtml(summarizeMonths(notExtracted))}</strong>. Run an Hourly extraction for those dates to include them.`);
+    if (monthlyMissing.length && !noMonthly) lines.push(`No Monthly figure to compare against: <strong>${escapeHtml(summarizeMonths(monthlyMissing))}</strong>.`);
+    qs("cmpSummary").innerHTML = lines.map((l, i) => `<div style="${i ? "margin-top:6px;" : ""}">${l}</div>`).join("");
+
+    const rows = compareRows(result);
+    const table = qs("cmpResultsTable");
+    if (!rows.length) { table.innerHTML = ""; return; }
+    const pctCell = (v) => v === "" ? "" : `${v}%`;
+    table.innerHTML = `<thead><tr><th>facility_id</th><th>Month</th><th>Monthly report (kWh)</th><th>Hourly sum (kWh)</th><th>Diff (kWh)</th><th>Diff (%)</th><th>Hourly coverage</th><th>Missing days (no hourly data)</th><th>Monthly fetched</th><th>Issue</th></tr></thead><tbody>` +
+      rows.map(r => {
+        const muted = r.kind === "notExtracted" || r.kind === "monthlyMissing";
+        return `
+        <tr style="${muted ? "opacity:.75;" : ""}">
           <td>${escapeHtml(r.facilityId)}</td>
-          <td>${escapeHtml(r.month)}</td>
+          <td style="white-space:nowrap;">${escapeHtml(r.month)}</td>
           <td>${r.monthlyKwh}</td>
           <td>${r.hourlyKwh}</td>
           <td>${r.diffKwh}</td>
-          <td>${r.diffPct}%</td>
-          <td>${escapeHtml(r.hourlyCoverage || "")}</td>
-          <td style="${r.complete === false ? "color:var(--muted);" : ""}">${escapeHtml(r.issue)}</td>
-        </tr>`).join("") + `</tbody>`;
+          <td>${pctCell(r.diffPct)}</td>
+          <td style="white-space:nowrap;">${escapeHtml(r.hourlyCoverage || "")}</td>
+          <td>${r.missingRanges ? escapeHtml(r.missingRanges).replace(/, /g, "<br>") : `<span style="color:var(--muted);">none</span>`}</td>
+          <td style="white-space:nowrap;${r.monthlyStale ? "color:var(--warn);font-weight:600;" : ""}">${escapeHtml(r.monthlyAsOf || "")}${r.monthlyStale ? " ⚠" : ""}</td>
+          <td style="${r.kind === "zero" || (r.hasGap && r.complete) ? "color:var(--warn);" : "color:var(--muted);"}">${escapeHtml(r.issue)}</td>
+        </tr>`; }).join("") + `</tbody>`;
   }
 
   // "GEN3228: 2026-01 → 2026-06; GEN1111: 2026-03" — compact list of months per facility.
@@ -716,14 +750,13 @@ const App = (() => {
   function handleDownloadCompare() {
     if (!lastCompareResult) return;
     const { conn, result } = lastCompareResult;
-    Audit.log("Download comparison", conn.companyName, `${result.flagged.length} flagged row(s)`);
-    const headers = ["facility_id", "Month", "Monthly report (kWh)", "Hourly sum (kWh)", "Diff (kWh)", "Diff (%)", "Hourly coverage", "Issue"];
-    const rows = [
-      ...result.flagged.map(r => [r.facilityId, r.month, r.monthlyKwh, r.hourlyKwh, r.diffKwh, r.diffPct, r.hourlyCoverage || "", r.issue]),
-      ...(result.notExtracted || []).map(r => [r.facilityId, r.month, r.monthlyKwh, "", "", "", "0 days", "Not checked — Hourly not extracted"]),
-    ];
-    if (!rows.length) rows.push(["No discrepancies found", "", "", "", "", "", "", ""]);
+    Audit.log("Download comparison", conn.companyName, `${compareRows(result).length} row(s)`);
+    const headers = ["facility_id", "Month", "Monthly report (kWh)", "Hourly sum (kWh)", "Diff (kWh)", "Diff (%)", "Hourly coverage", "Missing days (no hourly data)", "Monthly fetched", "Issue"];
+    const rows = compareRows(result).map(r => [r.facilityId, r.month, r.monthlyKwh, r.hourlyKwh, r.diffKwh, r.diffPct,
+      r.hourlyCoverage || "", r.missingRanges || "none", r.monthlyAsOf || "", r.issue]);
+    if (!rows.length) rows.push(["No discrepancies found", "", "", "", "", "", "", "", "", ""]);
     const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    ws["!cols"] = [10, 9, 14, 14, 11, 9, 13, 40, 13, 60].map(wch => ({ wch }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "HourlyVsMonthly");
     XLSX.writeFile(wb, `${conn.companyName}_HourlyVsMonthly.xlsx`);

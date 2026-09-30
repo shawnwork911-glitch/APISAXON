@@ -42,6 +42,28 @@ const CompareEngine = (() => {
   const daysInMonth = (y, mo) => new Date(Date.UTC(y, mo, 0)).getUTCDate();
   function round2(n) { return Math.round(n * 100) / 100; }
 
+  function localDateOf(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (isNaN(d)) return String(iso).slice(0, 10);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+  function todayISO() { return localDateOf(new Date().toISOString()); }
+
+  // ["2026-09-03","2026-09-04","2026-09-05","2026-09-29","2026-09-30"]
+  //   -> "2026-09-03 → 2026-09-05, 2026-09-29 → 2026-09-30 (not over yet)"
+  function compressDays(dates, today) {
+    if (!dates.length) return "";
+    const nextDay = (s) => { const [y, m, d] = s.split("-").map(Number); const t = new Date(Date.UTC(y, m - 1, d + 1));
+      return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())}`; };
+    const ranges = [];
+    let a = dates[0], b = dates[0];
+    const push = () => ranges.push((a === b ? a : `${a} → ${b}`) + (b >= today ? " (not over yet)" : ""));
+    for (const d of dates.slice(1)) { if (d === nextDay(b) && (d < today) === (b < today)) b = d; else { push(); a = b = d; } } // split past days from today/future
+    push();
+    return ranges.join(", ");
+  }
+
   /**
    * readings: rows from SheetsClient.listReadings(companyName) — every
    * Resolution mixed together; this filters to Hourly/Monthly itself.
@@ -61,6 +83,7 @@ const CompareEngine = (() => {
     const hourlySum = new Map();   // `${facilityId}|${month}` -> summed kWh
     const hourlyDays = new Map();  // `${facilityId}|${month}` -> Set of day-of-month with Hourly rows
     const monthlySum = new Map();
+    const monthlyRunAt = new Map(); // `${facilityId}|${month}` -> newest RunAt among its Monthly rows
     const hourlyMonthsSeen = new Set();
     const monthlyMonthsSeen = new Set();
 
@@ -81,12 +104,20 @@ const CompareEngine = (() => {
       } else {
         monthlySum.set(key, (monthlySum.get(key) || 0) + kwh);
         monthlyMonthsSeen.add(month);
+        const runAt = String(r.runAt || "");
+        if (runAt > (monthlyRunAt.get(key) || "")) monthlyRunAt.set(key, runAt);
       }
     }
 
-    const flagged = [];
-    const notExtracted = [];
+    const flagged = [];       // compared months that need attention (gap, incomplete hourly, or zero generation)
+    const notExtracted = [];  // Monthly exists, Hourly never extracted for that month
+    const monthlyMissing = []; // Hourly exists, no Monthly figure to compare against
     let totalChecked = 0;
+    const today = todayISO();
+    const monthRange = (month) => {
+      const [y, mo] = month.split("-").map(Number);
+      return compressDays(Array.from({ length: daysInMonth(y, mo) }, (_, i) => `${month}-${pad(i + 1)}`), today);
+    };
 
     for (const [key, monthlyKwhRaw] of monthlySum.entries()) {
       const [facilityId, month] = key.split("|");
@@ -95,7 +126,8 @@ const CompareEngine = (() => {
 
       // Monthly figure only — Hourly was never extracted for this month.
       if (!days || !days.size) {
-        notExtracted.push({ facilityId, month, monthlyKwh });
+        notExtracted.push({ facilityId, month, monthlyKwh, missingRanges: monthRange(month),
+          monthlyAsOf: localDateOf(monthlyRunAt.get(key)) });
         continue;
       }
 
@@ -107,30 +139,74 @@ const CompareEngine = (() => {
       const hourlyKwh = hourlySum.get(key) || 0;
       const diffKwh = round2(monthlyKwhRaw - hourlyKwh);
       const diffPct = monthlyKwhRaw ? round2((diffKwh / monthlyKwhRaw) * 100) : 0;
-      if (Math.abs(diffKwh) < 0.005) continue;
+      const hasGap = Math.abs(diffKwh) >= 0.005;
+      const zeroBoth = Math.abs(monthlyKwhRaw) < 0.005 && Math.abs(hourlyKwh) < 0.005;
 
-      let issue;
-      if (!complete) issue = `Hourly incomplete — only ${coveredDays} of ${totalDays} days extracted`;
-      else if (Math.abs(diffPct) >= 99.5 && Math.abs(hourlyKwh) < 0.005) issue = "FULL OUTAGE (0 kWh in hourly data)";
-      else issue = "hourly vs monthly mismatch";
+      // A month is fine only if it's fully covered, the totals agree, and it
+      // actually generated something. (Before, "totals agree" alone was enough,
+      // so an incomplete month of 0 kWh in both — like a plant that's offline —
+      // was silently reported as "no discrepancies".)
+      if (complete && !hasGap && !zeroBoth) continue;
+
+      const missing = [];
+      for (let day = 1; day <= totalDays; day++) if (!days.has(day)) missing.push(`${month}-${pad(day)}`);
+      const lastHourlyDate = `${month}-${pad(Math.max(...days))}`;
+      const monthlyAsOf = localDateOf(monthlyRunAt.get(key));
+      // A Monthly total fetched BEFORE the last hourly day is a snapshot of an
+      // unfinished month — it can't include the later days' generation.
+      const monthlyStale = hasGap && !!monthlyAsOf && monthlyAsOf <= lastHourlyDate;
+
+      const issues = [];
+      let kind;
+      if (zeroBoth) {
+        kind = "zero";
+        issues.push("0 kWh in both Monthly and Hourly — check whether the plant was offline or not reporting");
+      } else if (hasGap && complete && Math.abs(diffPct) >= 99.5 && Math.abs(hourlyKwh) < 0.005) {
+        kind = "outage";
+        issues.push("FULL OUTAGE (0 kWh in hourly data)");
+      } else if (hasGap && complete) {
+        kind = "mismatch";
+        issues.push("hourly vs monthly mismatch");
+      } else {
+        kind = "incomplete";
+      }
+      if (!complete) issues.push(`Hourly incomplete — ${missing.length} of ${totalDays} days missing` + (hasGap ? "" : " (totals still agree)"));
+      if (monthlyStale) issues.push(`Monthly figure fetched ${monthlyAsOf}, before the month's hourly data ended (${lastHourlyDate}) — re-run the Monthly extraction for ${month}`);
 
       flagged.push({
-        facilityId, month,
+        facilityId, month, kind,
         monthlyKwh, hourlyKwh: round2(hourlyKwh),
-        diffKwh, diffPct,
+        diffKwh, diffPct, hasGap,
         hourlyCoverage: `${coveredDays}/${totalDays} days`,
+        missingDays: missing,
+        missingRanges: compressDays(missing, today),
+        monthlyAsOf: monthlyAsOf || "",
+        monthlyStale,
         complete,
-        issue,
+        issue: issues.join(" · "),
       });
     }
 
-    // Real mismatches first (largest gap first), then incomplete-coverage months.
-    flagged.sort((a, b) => (b.complete - a.complete) || (Math.abs(b.diffKwh) - Math.abs(a.diffKwh)));
-    notExtracted.sort((a, b) => a.facilityId.localeCompare(b.facilityId) || a.month.localeCompare(b.month));
+    // Hourly months with no Monthly figure at all — nothing to compare against.
+    for (const [key, days] of hourlyDays.entries()) {
+      if (monthlySum.has(key)) continue;
+      const [facilityId, month] = key.split("|");
+      const [y, mo] = month.split("-").map(Number);
+      monthlyMissing.push({ facilityId, month, hourlyKwh: round2(hourlySum.get(key) || 0),
+        hourlyCoverage: `${days.size}/${daysInMonth(y, mo)} days` });
+    }
+
+    const byFacMonth = (a, b) => a.facilityId.localeCompare(b.facilityId) || a.month.localeCompare(b.month);
+    // Real kWh gaps first (largest first), then coverage/zero issues by facility and month.
+    flagged.sort((a, b) => (b.hasGap && b.complete) - (a.hasGap && a.complete)
+      || ((a.hasGap && a.complete) ? Math.abs(b.diffKwh) - Math.abs(a.diffKwh) : byFacMonth(a, b)));
+    notExtracted.sort(byFacMonth);
+    monthlyMissing.sort(byFacMonth);
 
     return {
       flagged,
       notExtracted,
+      monthlyMissing,
       totalChecked,
       hourlyMonths: [...hourlyMonthsSeen].sort(),
       monthlyMonths: [...monthlyMonthsSeen].sort(),
