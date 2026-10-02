@@ -158,7 +158,13 @@ tbody tr:last-child td{border-bottom:none;}
 .import-stepper li.active{color:var(--accent);border-color:rgba(229,151,42,.35);background:rgba(229,151,42,.08);font-weight:600;}
 .import-stepper li.done{color:var(--ok);}
 .import-stepper li.done::before{content:"✓ ";}
-.import-file-grid{display:grid;grid-template-columns:1.4fr 1fr;gap:12px;}
+.import-tabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;border-bottom:1px solid var(--line);padding-bottom:10px;}
+.import-tab{display:inline-flex;align-items:center;gap:7px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);padding:6px 12px;border-radius:8px;font-size:.82rem;cursor:pointer;}
+.import-tab:hover{color:var(--ink);}
+.import-tab.active{color:var(--accent);border-color:rgba(229,151,42,.35);background:rgba(229,151,42,.08);font-weight:600;}
+.import-tab-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+.import-sheet-preview{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px;background:rgba(255,255,255,.015);}
+.import-sheet-preview h4{margin:0 0 10px;font-size:.92rem;}
 .import-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0 12px;margin-top:14px;}
 .map-sample{font-size:.78rem;color:var(--muted);line-height:1.6;}
 .map-sample .good{color:var(--ok);}
@@ -170,7 +176,7 @@ tbody tr:last-child td{border-bottom:none;}
 #impSummary{font-size:.84rem;color:#c9d3e0;}
 .field input[type="file"]{padding:7px;cursor:pointer;}
 .audit-action[data-kind="import"]{background:rgba(58,192,214,.16);color:var(--sg);}
-@media (max-width:820px){.import-file-grid{grid-template-columns:1fr;}.import-stats{grid-template-columns:1fr 1fr;}}
+@media (max-width:820px){.import-stats{grid-template-columns:1fr 1fr;}}
 </style>
 </head>
 <body>
@@ -344,7 +350,7 @@ tbody tr:last-child td{border-bottom:none;}
           <button class="btn" id="btnImportFromExport">⤒ Import Excel data</button>
         </div>
         <div class="callout">
-          Reads whatever's already in the <code>Readings</code> tab — however it got there, a manual Extraction run, a multi-day quota-limited backfill, nightly Daily-auto runs, or a spreadsheet uploaded with <strong>Import Excel data</strong> — and converts it for any date range you pick. Uses the same facility_id / meter_id / eac_registry_id settings already configured for this company — click it from the Dashboard to edit.
+          Reads whatever's already in the <code>Readings</code> tab — however it got there, a manual Extraction run, a multi-day quota-limited backfill, or a spreadsheet uploaded with <strong>Import Excel data</strong> — and converts it for any date range you pick. Uses the same facility_id / meter_id / eac_registry_id settings already configured for this company — click it from the Dashboard to edit.
         </div>
         <div class="extraction-grid" style="grid-template-columns:1.2fr 1fr .8fr .8fr;">
           <div class="field">
@@ -448,12 +454,6 @@ tbody tr:last-child td{border-bottom:none;}
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-head"><h3>Daily automation (GitHub Actions)</h3></div>
-        <div class="callout">
-          This page can only run while it's open in a browser tab. For true unattended daily/hourly extraction, use the scheduled GitHub Action in <code>/.github/workflows/daily-extraction.yml</code> — it reads the same Google Sheet's <code>Connections</code> tab and writes to the same <code>Readings</code> tab, using its own copy of the service account credential (set as GitHub secrets). See <code>docs/SETUP.md</code>.
-        </div>
-      </div>
     </div>
   </div>
 </div>
@@ -490,6 +490,7 @@ tbody tr:last-child td{border-bottom:none;}
       <div class="table-scroll" style="max-height:200px;">
         <table id="stationsModalDataStoredTable"></table>
       </div>
+      <div id="stationsModalMonthlyCheck"></div>
     </div>
 
     <div class="modal-actions">
@@ -506,50 +507,44 @@ tbody tr:last-child td{border-bottom:none;}
       <h3>Import generation data from Excel</h3>
       <button class="modal-close" id="btnImportClose" aria-label="Close">✕</button>
     </div>
-    <div class="modal-sub">Upload a spreadsheet, match its columns to the Readings columns, then save it to the Google Sheet. Compare and Export use it like extracted data.</div>
+    <div class="modal-sub">Upload a spreadsheet, say which sheet holds hourly or monthly data, match its columns to the Readings columns, then save it to the Google Sheet. Compare and Export use it like extracted data.</div>
     <ol class="import-stepper" id="importStepper">
-      <li>Choose file</li>
+      <li>Company &amp; file</li>
       <li>Map columns</li>
       <li>Preview &amp; save</li>
     </ol>
 
     <section id="importStepFile">
-      <div class="import-file-grid">
-        <div class="field"><label>Company</label><select id="impCompany"></select></div>
-        <div class="field"><label>Resolution of the data in the file</label>
-          <select id="impResolution">
-            <option value="Hourly">Hourly</option>
-            <option value="Daily">Daily</option>
-            <option value="Monthly">Monthly</option>
-          </select>
-        </div>
+      <div class="field" style="max-width:520px;">
+        <label>Company</label>
+        <input id="impCompany" list="impCompanyList" placeholder="Pick from the list or type a company name" autocomplete="off">
+        <datalist id="impCompanyList"></datalist>
+        <div class="field-help" id="impCompanyHint"></div>
       </div>
       <div class="field"><label>Excel or CSV file</label><input type="file" id="impFile" accept=".xlsx,.xlsm,.xls,.csv,.txt"></div>
-      <div class="import-file-grid">
-        <div class="field" id="impSheetWrap" hidden><label>Sheet</label><select id="impSheet"></select></div>
-        <div class="field" id="impHeaderRowWrap" hidden><label>Column titles are on row</label><input type="number" id="impHeaderRow" min="1" step="1"></div>
+      <div id="impSheetsWrap" hidden>
+        <div class="field-help" id="impSheetsNote" style="margin:0 0 8px;"></div>
+        <div class="table-scroll" style="max-height:260px;"><table id="impSheetTable"></table></div>
       </div>
-      <div id="impFileInfo"></div>
     </section>
 
     <section id="importStepMap" hidden>
+      <div class="import-tabs" id="impSheetTabs" hidden></div>
       <div class="field-help" id="impMapNote" style="margin:0 0 10px;"></div>
       <div class="table-scroll"><table id="impMapTable"></table></div>
       <div class="import-options" id="impOptions"></div>
     </section>
 
     <section id="importStepPreview" hidden>
-      <div id="impSummary"></div>
-      <div class="field" id="impExistingWrap" hidden style="max-width:420px;margin-top:10px;">
+      <div class="field" id="impExistingWrap" hidden style="max-width:420px;">
         <label>Readings already in the Sheet</label>
         <select id="impExisting">
           <option value="keep">Keep the Sheet's values — only add new readings</option>
           <option value="replace">Replace with the file's values</option>
         </select>
       </div>
-      <div class="table-scroll" style="max-height:180px;margin-top:10px;"><table id="impStationTable"></table></div>
-      <div class="field-help" id="impPreviewCaption" style="margin:12px 0 6px;"></div>
-      <div class="table-scroll" style="max-height:260px;"><table id="impPreviewTable"></table></div>
+      <div class="field-help" id="impPreviewNote" style="margin-bottom:8px;"></div>
+      <div id="impPreviewSheets"></div>
       <div id="impSaveCount" style="font-size:.85rem;color:var(--muted);margin-top:12px;"></div>
       <div class="job-bar" id="impProgress" hidden style="margin-top:10px;"><div class="job-bar-fill" id="impProgressFill"></div></div>
     </section>
@@ -627,8 +622,8 @@ tbody tr:last-child td{border-bottom:none;}
 <script src="js/sheets-client.js?v=20260930k"></script>
 <script src="js/templates.js?v=20260930k"></script>
 <script src="js/compare.js?v=20260930k"></script>
-<script src="js/import.js?v=20261001a"></script>
+<script src="js/import.js?v=20261002d"></script>
 <script src="js/extraction.js?v=20260930k"></script>
-<script src="js/app.js?v=20261001a"></script>
+<script src="js/app.js?v=20261002d"></script>
 </body>
 </html>
