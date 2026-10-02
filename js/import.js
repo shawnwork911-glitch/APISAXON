@@ -332,6 +332,13 @@ const ExcelImport = (() => {
     qs("impFile").addEventListener("change", handleFile);
     qs("impCompany").addEventListener("input", () => { st.companyName = qs("impCompany").value; renderCompanyHint(); });
     qs("impExisting").addEventListener("change", () => { st.existingChoice = qs("impExisting").value; renderPreview(); });
+    qs("impPreviewSheets").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-blank-sheet]");
+      if (!btn || !st || st.saving || st.saved) return;
+      st.sheets[+btn.dataset.blankSheet].blank = btn.dataset.blank;
+      buildAll();
+      renderPreview();
+    });
     qs("importModalOverlay").addEventListener("click", (e) => { if (e.target.id === "importModalOverlay" && !st?.saving) close(); });
   }
 
@@ -449,6 +456,7 @@ const ExcelImport = (() => {
       role: "", headerIdx: 0, headers: [], dataRows: 0,
       map: { timestamp: "", time: "", station: "", kwh: "" }, mapTouched: false, fromSaved: false,
       opt: { unit: "kWh", dateOrder: "auto", tz: "local", hourEnding: false, unknown: "skip" },
+      blank: "",   // blank kWh cells: "" = not asked yet, "zero" = save as 0, "skip" = leave out
       fixedName: "", detectedOrder: "DMY", built: null,
     };
     // Header row = first of the top 20 rows with 2+ filled cells, mostly text.
@@ -704,7 +712,8 @@ const ExcelImport = (() => {
       skipped.set(reason, s);
     };
     const agg = new Map();
-    let read = 0, anyTime = false, negatives = 0;
+    let read = 0, anyTime = false, negatives = 0, allFrom = "", allTo = "";
+    const blanks = { count: 0, samples: [] };  // rows whose kWh cell is empty
     const newStations = new Set();
     if (fixed?.isNew) newStations.add(fixed.id);
 
@@ -720,9 +729,9 @@ const ExcelImport = (() => {
         if (!t) { skip("Time not recognised", rowNo, sh.aoaText[i]?.[timeCol]); continue; }
         wc = { ...wc, H: t.H, Mi: t.Mi, S: t.S, hasTime: true };
       }
-      const n = parseNumber(row[kwhCol]);
-      if (n === null) { skip("Blank kWh value", rowNo); continue; }
+      let n = parseNumber(row[kwhCol]);
       if (Number.isNaN(n)) { skip("kWh value is not a number", rowNo, sh.aoaText[i]?.[kwhCol]); continue; }
+      const isBlankKwh = n === null; // decided below, once the row is otherwise valid
 
       let stationId, stationName;
       if (fixed) { stationId = fixed.id; stationName = fixed.name || fixed.id; }
@@ -747,6 +756,16 @@ const ExcelImport = (() => {
       const H = resolution === "Hourly" ? l.getUTCHours() : 0;
       const date = `${y}-${pad(mo)}-${pad(d)}`;
       const timestamp = `${date} ${pad(H)}:00:00`;
+      if (!allFrom || date < allFrom) allFrom = date;
+      if (!allTo || date > allTo) allTo = date;
+
+      // A blank kWh cell is never dropped silently: the person chooses 0 or leave out.
+      if (isBlankKwh) {
+        blanks.count++;
+        if (blanks.samples.length < 3) blanks.samples.push(`row ${rowNo}`);
+        if (sh.blank !== "zero") continue; // not answered yet, or "leave out"
+        n = 0;
+      }
 
       const key = `${stationId}\u0001${timestamp}`;
       const e = agg.get(key) || { timestamp, date, stationId, stationName, kwh: 0, n: 0 };
@@ -761,7 +780,7 @@ const ExcelImport = (() => {
       .sort((a, b) => a.stationName.localeCompare(b.stationName) || a.timestamp.localeCompare(b.timestamp));
     const combinedRows = rows.filter(r => r.n > 1);
     const errors = [];
-    if (!rows.length) errors.push("No usable rows — check the column mapping and the skipped-row reasons below.");
+    if (!rows.length && !(blanks.count && !sh.blank)) errors.push("No usable rows — check the column mapping and the skipped-row reasons below.");
     if (resolution === "Hourly" && rows.length && !anyTime) {
       errors.push("No time of day was found in any row, so every reading would land at 00:00. Map a Time column, or set this sheet to Daily or Monthly on step 1.");
     }
@@ -770,7 +789,7 @@ const ExcelImport = (() => {
       combined: { buckets: combinedRows.length, sourceRows: combinedRows.reduce((s, r) => s + r.n, 0) },
       fromDate: rows.length ? rows.reduce((m, r) => (r.date < m ? r.date : m), rows[0].date) : "",
       toDate: rows.length ? rows.reduce((m, r) => (r.date > m ? r.date : m), rows[0].date) : "",
-      errors, dupOfSheet: new Map(),
+      errors, dupOfSheet: new Map(), blanks, allFrom, allTo,
     };
   }
 
@@ -778,7 +797,7 @@ const ExcelImport = (() => {
 
   const rowKey = (res, r) => `${res}\u0001${r.stationId}\u0001${r.timestamp}`;
 
-  async function enterPreview() {
+  function buildAll() {
     const list = chosenSheets();
     // Build every sheet; a reading that an earlier sheet of the same resolution
     // already has is dropped here, so the Sheet never gets two versions of it.
@@ -792,13 +811,19 @@ const ExcelImport = (() => {
         return true;
       });
     }
+    return list;
+  }
+
+  async function enterPreview() {
+    const list = buildAll();
     st.existingKeys = null;
     st.existingError = "";
-    const ok = list.filter(sh => sh.built.rows.length);
+    // Range includes rows with a blank kWh, so the check still covers them if they're saved as 0.
+    const ok = list.filter(sh => sh.built.allFrom);
     if (!ok.length || list.some(sh => sh.built.errors.length)) { st.checking = false; renderPreview(); return; }
     if (!st.conn) { st.existingKeys = new Set(); renderPreview(); return; } // brand-new company — nothing stored yet
-    const from = ok.reduce((m, sh) => (sh.built.fromDate < m ? sh.built.fromDate : m), ok[0].built.fromDate);
-    const to = ok.reduce((m, sh) => (sh.built.toDate > m ? sh.built.toDate : m), ok[0].built.toDate);
+    const from = ok.reduce((m, sh) => (sh.built.allFrom < m ? sh.built.allFrom : m), ok[0].built.allFrom);
+    const to = ok.reduce((m, sh) => (sh.built.allTo > m ? sh.built.allTo : m), ok[0].built.allTo);
     const [ty, tm] = to.split("-").map(Number);
     const seq = ++st.checkSeq;
     st.checking = true;
@@ -817,7 +842,7 @@ const ExcelImport = (() => {
 
   function rowsToSave(sh) {
     const b = sh.built;
-    if (!b || b.errors.length) return [];
+    if (!b || b.errors.length || (b.blanks.count && !sh.blank)) return [];
     if (!st.existingKeys || st.existingChoice === "replace") return b.rows;
     return b.rows.filter(r => !st.existingKeys.has(rowKey(sh.role, r)));
   }
@@ -845,6 +870,23 @@ const ExcelImport = (() => {
       notes.push(newStationsAllowed()
         ? `${b.newStations.length} new station(s) will be added to the company: ${names}. Set their facility_id on the Dashboard so Compare and Export group them correctly.`
         : `<span style="color:var(--warn);">${b.newStations.length} station value(s) aren't in this company and will be saved as new station IDs</span> (${names}). Give them a facility_id on the Dashboard so Compare and Export group them correctly.`);
+    }
+    if (b.blanks.count) {
+      const i = st.sheets.indexOf(sh), eg = esc(b.blanks.samples.join(", "));
+      if (!sh.blank) {
+        notes.push(`<div class="callout warn" style="margin:4px 0 8px;"><strong>${b.blanks.count} row(s) have no kWh value</strong>
+          The kWh cell is empty on ${b.blanks.count} row(s) — e.g. ${eg}. Should they be saved as <strong>0 kWh</strong>
+          (for example, night hours with no generation), or left out?
+          <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-primary" data-blank-sheet="${i}" data-blank="zero">Save them as 0 kWh</button>
+            <button type="button" class="btn" data-blank-sheet="${i}" data-blank="skip">Leave them out</button>
+          </div></div>`);
+      } else {
+        notes.push((sh.blank === "zero"
+          ? `${b.blanks.count} blank kWh value(s) will be saved as <strong>0 kWh</strong> (e.g. ${eg}).`
+          : `<span style="color:var(--warn);">${b.blanks.count} row(s) with a blank kWh value will be left out</span> (e.g. ${eg}).`)
+          + ` <button type="button" class="btn btn-ghost" style="padding:2px 8px;font-size:.76rem;" data-blank-sheet="${i}" data-blank="">Change</button>`);
+      }
     }
     if (b.negatives) notes.push(`<span style="color:var(--warn);">${b.negatives} row(s) have a negative kWh value.</span>`);
     for (const [reason, s] of b.skipped) notes.push(`<span style="color:var(--err);">Skipped ${s.count}: ${esc(reason)}</span> <span style="opacity:.75;">— e.g. ${esc(s.samples.join(", "))}</span>`);
@@ -894,10 +936,13 @@ const ExcelImport = (() => {
     qs("impPreviewNote").innerHTML = note;
 
     const blocked = list.filter(sh => sh.built?.errors.length);
+    const unanswered = list.filter(sh => sh.built?.blanks.count && !sh.blank);
     const counts = list.map(sh => ({ sh, n: rowsToSave(sh).length })).filter(x => x.n);
     const total = counts.reduce((s, x) => s + x.n, 0);
     let msg = "";
-    if (blocked.length) {
+    if (unanswered.length && !blocked.length) {
+      msg = `<span style="color:var(--warn);">Answer the blank kWh question${unanswered.length > 1 ? "s" : ""} above${list.length > 1 ? ` (${unanswered.map(sh => `“${esc(sh.name)}”`).join(", ")})` : ""} before saving.</span>`;
+    } else if (blocked.length) {
       msg = `<span style="color:var(--err);">Fix ${blocked.map(sh => `“${esc(sh.name)}”`).join(", ")} first</span> — go Back to change the mapping, or set the sheet to <em>Don't import</em> on step 1.`;
     } else if (!st.checking && total) {
       msg = `${counts.map(x => `<strong style="color:var(--ink);">${x.n}</strong> ${esc(x.sh.role.toLowerCase())}`).join(" and ")} reading(s) will be added to the <code>Readings</code> tab for <strong>${esc(st.companyName.trim())}</strong>.`
@@ -906,7 +951,7 @@ const ExcelImport = (() => {
       msg = `Every reading in this file is already in the Sheet. Choose <strong>Replace with the file's values</strong> above to overwrite them, or close.`;
     }
     qs("impSaveCount").innerHTML = msg;
-    qs("btnImportNext").disabled = !!blocked.length || st.checking || !total || st.saving;
+    qs("btnImportNext").disabled = !!blocked.length || !!unanswered.length || st.checking || !total || st.saving;
   }
 
   /* ---------------------------- save ---------------------------- */
@@ -973,7 +1018,8 @@ const ExcelImport = (() => {
     }
     done();
 
-    const perSheet = list.map(x => `${x.sh.role} “${x.sh.name}” ${x.sh.built.fromDate} → ${x.sh.built.toDate} (${x.rows.length})`).join("; ");
+    const perSheet = list.map(x => `${x.sh.role} “${x.sh.name}” ${x.sh.built.fromDate} → ${x.sh.built.toDate} (${x.rows.length})`
+      + (x.sh.built.blanks.count ? `, ${x.sh.built.blanks.count} blank kWh ${x.sh.blank === "zero" ? "saved as 0" : "left out"}` : "")).join("; ");
     deps.audit?.(failure ? "Excel import failed" : "Excel import", conn.companyName,
       `${S.fileName} · ${perSheet} · ${saved} of ${all.length} row(s) saved`
       + (S.existingChoice === "replace" ? " · replace existing" : "") + (failure ? ` · FAILED: ${failure.message}` : ""));
@@ -1040,7 +1086,7 @@ const ExcelImport = (() => {
     setStatus("");
     qs("impProgress").hidden = true;
     qs("impProgressFill").style.width = "0";
-    if (st.step === 3) { st.checkSeq++; st.checking = false; showStep(2); renderMapping(); }
+    if (st.step === 3) { st.checkSeq++; st.checking = false; chosenSheets().forEach(sh => { sh.blank = ""; }); showStep(2); renderMapping(); }
     else if (st.step === 2) { showStep(1); renderSheets(); }
   }
 
