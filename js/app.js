@@ -172,6 +172,28 @@ const App = (() => {
     qs("btnRunExport").addEventListener("click", handleRunExport);
     qs("btnResumeAll").addEventListener("click", handleResumeAll);
     qs("expResolution").addEventListener("change", syncExportFieldVisibility);
+
+    // Excel import — same modal from both tabs, pre-set to whatever that tab has selected.
+    ExcelImport.init({
+      getConnections: () => connections,
+      audit: (action, company, details) => Audit.log(action, company, details),
+      onImported: handleExcelImported,
+    });
+    qs("btnImportFromCompare").addEventListener("click", () =>
+      ExcelImport.open({ companyId: qs("cmpCompany").value, resolution: "Hourly" }));
+    qs("btnImportFromExport").addEventListener("click", () =>
+      ExcelImport.open({ companyId: qs("expCompany").value, resolution: qs("expResolution").value }));
+  }
+
+  // After an import, select that company on Compare and Export and reload
+  // Compare's period list so the newly imported months show up straight away.
+  function handleExcelImported(conn) {
+    if (currentView === "compare") {
+      qs("cmpCompany").value = conn.id;
+      refreshComparePeriods();
+    } else if (currentView === "export") {
+      qs("expCompany").value = conn.id;
+    }
   }
 
   function showView(view) {
@@ -1675,6 +1697,7 @@ const App = (() => {
   function auditKind(action) {
     const a = String(action).toLowerCase();
     if (a.includes("failed") || a.includes("remove")) return "danger";
+    if (a.includes("import")) return "import";
     if (a.includes("settings")) return "settings";
     if (a.includes("extraction")) return "extract";
     if (a.includes("export") || a.includes("download")) return "export";
