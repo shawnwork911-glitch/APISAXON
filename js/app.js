@@ -187,12 +187,18 @@ const App = (() => {
 
   // After an import, select that company on Compare and Export and reload
   // Compare's period list so the newly imported months show up straight away.
-  function handleExcelImported(conn) {
+  // A new Excel-import company was also just added to Connections, so
+  // reload the list before selecting it.
+  async function handleExcelImported(conn) {
+    await refreshConnections();
+    const id = (connections.find(c => c.id === conn.id || c.companyName === conn.companyName) || conn).id;
     if (currentView === "compare") {
-      qs("cmpCompany").value = conn.id;
+      populateCompareCompanySelect();
+      qs("cmpCompany").value = id;
       refreshComparePeriods();
     } else if (currentView === "export") {
-      qs("expCompany").value = conn.id;
+      populateExportCompanySelect();
+      qs("expCompany").value = id;
     }
   }
 
@@ -288,15 +294,18 @@ const App = (() => {
           <div class="company-name">${escapeHtml(conn.companyName)}</div>
           <div class="company-sub">${brand.label} · ${(conn.stations || []).length} station(s)</div>
         </div>
-        <div class="company-status">${brand.confidence === "verified" ? "<span class=\"pill ok\">Ready</span>" : "<span class=\"pill warn\">Untested endpoints</span>"}${missingBadge}</div>
+        <div class="company-status">${brand.manual ? "<span class=\"pill ok\">Imported data</span>" : brand.confidence === "verified" ? "<span class=\"pill ok\">Ready</span>" : "<span class=\"pill warn\">Untested endpoints</span>"}${missingBadge}</div>
         <div class="company-actions">
-          <button class="btn btn-ghost" data-action="extract" data-id="${conn.id}">Extract</button>
+          ${brand.manual
+            ? `<button class="btn btn-ghost" data-action="import" data-id="${conn.id}">Import</button>`
+            : `<button class="btn btn-ghost" data-action="extract" data-id="${conn.id}">Extract</button>`}
           ${currentRole === "Admin" ? `<button class="btn btn-ghost" data-action="delete" data-id="${conn.id}">Remove</button>` : ""}
         </div>`;
       root.appendChild(row);
     }
     root.querySelectorAll("[data-action='view-stations']").forEach(el => el.addEventListener("click", () => openStationsModal(el.dataset.id)));
     root.querySelectorAll("[data-action='extract']").forEach(b => b.addEventListener("click", () => { showView("extraction"); qs("extCompany").value = b.dataset.id; handleExtractionCompanyChange(); }));
+    root.querySelectorAll("[data-action='import']").forEach(b => b.addEventListener("click", () => ExcelImport.open({ companyId: b.dataset.id })));
     root.querySelectorAll("[data-action='delete']").forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); handleDeleteConnection(b.dataset.id); }));
   }
 
@@ -330,8 +339,11 @@ const App = (() => {
   async function loadDataStoredSummary(conn) {
     const table = qs("stationsModalDataStoredTable");
     table.innerHTML = `<tbody><tr><td class="field-help">Loading…</td></tr></tbody>`;
+    qs("stationsModalMonthlyCheck").innerHTML = "";
     try {
-      renderDataStoredSummary(table, await getReadingsSummary(conn));
+      const summary = await getReadingsSummary(conn);
+      renderDataStoredSummary(table, summary);
+      verifyUnfinishedMonthly(conn, summary);
     } catch (e) {
       table.innerHTML = `<tbody><tr><td class="field-help">Could not load: ${escapeHtml(e.message)}</td></tr></tbody>`;
     }
@@ -344,9 +356,144 @@ const App = (() => {
       table.innerHTML = `<tbody><tr><td class="field-help">Nothing extracted yet for this company.</td></tr></tbody>`;
       return;
     }
+    const cell = (k) => {
+      const s = summary[k];
+      if (k !== "Monthly") return [escapeHtml(s.earliest), escapeHtml(s.latest)];
+      // Monthly rows are one per month (dated the 1st), so show "Sep 2026"
+      // rather than a day. Latest = the latest month that's actually over;
+      // rows for the current (or a later) month are checked separately by
+      // verifyUnfinishedMonthly() and noted underneath.
+      const months = monthsOfSummary(s);
+      if (!months.length) return ["?", "?"];
+      const now = new Date();
+      const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      const finished = months.filter(m => m < thisMonth);
+      const notOver = months.filter(m => m >= thisMonth);
+      const latest = finished.length ? monthYearLabel(finished[finished.length - 1]) : "—";
+      const note = notOver.length
+        ? `<div class="field-help" style="margin-top:2px;">${escapeHtml(notOver.map(monthYearLabel).join(", "))} also stored, though that month isn't over — checked below</div>`
+        : "";
+      return [escapeHtml(monthYearLabel(months[0])), escapeHtml(latest) + note];
+    };
     table.innerHTML = `<thead><tr><th>Resolution</th><th>Rows</th><th>Earliest</th><th>Latest</th></tr></thead><tbody>` +
-      keys.map(k => `<tr><td>${escapeHtml(k)}</td><td>${summary[k].rows}</td><td>${escapeHtml(summary[k].earliest)}</td><td>${escapeHtml(summary[k].latest)}</td></tr>`).join("") +
+      keys.map(k => { const [first, last] = cell(k);
+        return `<tr><td>${escapeHtml(k)}</td><td>${summary[k].rows}</td><td>${first}</td><td>${last}</td></tr>`; }).join("") +
       `</tbody>`;
+  }
+
+  // Months a resolution has data for: the proxy's per-month list, or — if it
+  // doesn't send one — every month between earliest and latest.
+  function monthsOfSummary(s) {
+    let months = (s?.months || []).map(m => String(m).slice(0, 7)).sort();
+    if (!months.length && /^\d{4}-\d{2}/.test(s?.earliest || "") && /^\d{4}-\d{2}/.test(s?.latest || "")) {
+      for (let [y, m] = String(s.earliest).slice(0, 7).split("-").map(Number); ; ) {
+        const v = `${y}-${String(m).padStart(2, "0")}`;
+        months.push(v);
+        if (v >= String(s.latest).slice(0, 7) || months.length > 600) break;
+        if (++m > 12) { m = 1; y++; }
+      }
+    }
+    return months;
+  }
+
+  // A Monthly row for a month that isn't over can't be a full month's total,
+  // so read those rows and test each one against the rest of the data:
+  //   - a month that hasn't started, or a row fetched before its month began → wrong date
+  //   - the same value as the previous month → that month stored again under the wrong date
+  //   - the previous month's hourly total matching it instead of the previous month's own
+  //     Monthly figure → dates shifted by a month
+  //   - far more kWh than the days elapsed could produce (from last month's daily average)
+  //   - 0 kWh → a placeholder, not real generation yet
+  //   - otherwise a genuine month-to-date figure (cross-checked with hourly data if there is any)
+  async function verifyUnfinishedMonthly(conn, summary) {
+    const box = qs("stationsModalMonthlyCheck");
+    const now = new Date();
+    const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const suspect = monthsOfSummary(summary?.Monthly).filter(m => m >= thisMonth);
+    if (!suspect.length) { box.innerHTML = ""; return; }
+    const [ty, tm] = thisMonth.split("-").map(Number);
+    const prevMonth = tm === 1 ? `${ty - 1}-12` : `${ty}-${String(tm - 1).padStart(2, "0")}`;
+    const last = suspect[suspect.length - 1];
+    const label = monthYearLabel;
+    box.innerHTML = `<div class="field-help" style="margin-top:10px;">Checking the ${escapeHtml(suspect.map(label).join(", "))} Monthly row(s)…</div>`;
+
+    let rows;
+    try {
+      rows = dedupeReadings(await SheetsClient.listReadings(conn.companyName, { fromDate: `${prevMonth}-01`, toDate: monthEnd(`${last}-01`) }));
+    } catch (e) {
+      box.innerHTML = `<div class="field-help" style="margin-top:10px;color:var(--warn);">Couldn't check the ${escapeHtml(suspect.map(label).join(", "))} Monthly row(s): ${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    const monthOf = (r) => (extractDateOnly(r.timestamp) || "").slice(0, 7);
+    const dayOf = (r) => Number((extractDateOnly(r.timestamp) || "").slice(8, 10));
+    const res = (r) => String(r.resolution).trim();
+    const monthly = (st, m) => rows.find(r => res(r) === "Monthly" && r.stationId === st && monthOf(r) === m);
+    const hourly = (st, m, uptoDay = 31) => {
+      const list = rows.filter(r => res(r) === "Hourly" && r.stationId === st && monthOf(r) === m && dayOf(r) <= uptoDay);
+      return { kwh: list.reduce((t, r) => t + (Number(r.kwh) || 0), 0), days: new Set(list.map(dayOf)).size };
+    };
+    const daysIn = (m) => { const [y, mo] = m.split("-").map(Number); return new Date(Date.UTC(y, mo, 0)).getUTCDate(); };
+    const close = (a, b, pct) => Math.abs(a - b) <= Math.max(0.01, Math.abs(b) * pct);
+    const fmt = (n) => (Math.round(n * 100) / 100).toLocaleString("en-GB");
+
+    const checks = [];
+    for (const r of rows.filter(r => res(r) === "Monthly" && suspect.includes(monthOf(r)))) {
+      const m = monthOf(r), kwh = Number(r.kwh) || 0;
+      const fetched = r.runAt && !isNaN(new Date(r.runAt)) ? localISODate(new Date(r.runAt)) : "";
+      const name = r.stationName || r.stationId;
+      let verdict, kind;
+      const prev = monthly(r.stationId, prevMonth);
+      const prevKwh = prev ? Number(prev.kwh) || 0 : null;
+      const prevHourly = hourly(r.stationId, prevMonth);
+      if (m > thisMonth) {
+        kind = "bad"; verdict = `${label(m)} hasn't started yet, so this row can't be real data — its date is wrong.`;
+      } else if (fetched && fetched < `${m}-01`) {
+        kind = "bad"; verdict = `Fetched on ${fetched}, before ${label(m)} began, so it can't be ${label(m)} data — its date is wrong.`;
+      } else if (prevKwh != null && kwh > 0 && close(kwh, prevKwh, 0.005)) {
+        kind = "bad"; verdict = `Same value as ${label(prevMonth)} (${fmt(prevKwh)} kWh) — looks like ${label(prevMonth)}'s total stored again under ${label(m)}.`;
+      } else if (prevHourly.days >= daysIn(prevMonth) && kwh > 0 && close(kwh, prevHourly.kwh, 0.01)
+                 && (prevKwh == null || !close(prevKwh, prevHourly.kwh, 0.01))) {
+        kind = "bad"; verdict = `Matches ${label(prevMonth)}'s hourly total (${fmt(prevHourly.kwh)} kWh) rather than anything in ${label(m)} — Monthly dates look shifted by one month.`;
+      } else {
+        const fetchedDay = fetched && fetched.slice(0, 7) === m ? Number(fetched.slice(8, 10)) : null;
+        const daysCovered = fetchedDay || now.getDate();
+        const expected = prevKwh ? (prevKwh / daysIn(prevMonth)) * daysCovered : null;
+        const h = hourly(r.stationId, m, daysCovered);
+        if (kwh === 0) {
+          kind = "info"; verdict = `0 kWh${fetched ? ` (fetched ${fetched})` : ""} — a placeholder for a month that has only just started, not real generation yet.`;
+        } else if (expected != null && kwh > expected * 2 + 1 && kwh > prevKwh * 0.5) {
+          kind = "bad"; verdict = `Too high for ${daysCovered} day(s): ${fmt(kwh)} kWh, against about ${fmt(expected)} kWh expected from ${label(prevMonth)}'s daily average. Probably a full month's total under the wrong date.`;
+        } else if (h.days && !close(kwh, h.kwh, 0.05)) {
+          kind = "warn"; verdict = `Month-to-date figure (1–${daysCovered} ${label(m)}), but it doesn't match the hourly data for those days (${fmt(h.kwh)} kWh over ${h.days} day(s)).`;
+        } else {
+          kind = "ok"; verdict = `Real month-to-date figure: 1–${daysCovered} ${label(m)}${fetched ? `, fetched ${fetched}` : ""}${h.days ? `, and it matches the hourly data` : ""}. Not a full month — extract ${label(m)} again after it ends to replace it.`;
+        }
+      }
+      checks.push({ m, name, kwh, fetched, verdict, kind });
+    }
+    if (!checks.length) { box.innerHTML = ""; return; }
+    const color = { bad: "var(--err)", warn: "var(--warn)", info: "var(--muted)", ok: "var(--ok)" };
+    const icon = { bad: "✕", warn: "⚠", info: "○", ok: "✓" };
+    const bad = checks.filter(c => c.kind === "bad").length;
+    box.innerHTML = `
+      <div class="callout${bad ? " warn" : ""}" style="margin:12px 0 8px;">
+        <strong>Check of unfinished month(s): ${escapeHtml(suspect.map(label).join(", "))}</strong>
+        ${bad ? `${bad} of ${checks.length} Monthly row(s) don't hold up — see below. Compare will show them against the hourly data until they're re-extracted.`
+              : `The ${checks.length} Monthly row(s) for a month that isn't over were checked against the rest of the data.`}
+      </div>
+      <div class="table-scroll" style="max-height:200px;"><table>
+        <thead><tr><th>Month</th><th>Station</th><th>kWh</th><th>Fetched</th><th>Result</th></tr></thead><tbody>
+        ${checks.map(c => `<tr><td style="white-space:nowrap;">${escapeHtml(label(c.m))}</td><td>${escapeHtml(c.name)}</td><td>${fmt(c.kwh)}</td>
+          <td style="white-space:nowrap;">${escapeHtml(c.fetched || "unknown")}</td>
+          <td style="color:${color[c.kind]};">${icon[c.kind]} ${escapeHtml(c.verdict)}</td></tr>`).join("")}
+        </tbody></table></div>`;
+  }
+
+  // "2026-09" or "2026-09-01" -> "Sep 2026" (built from the text itself, no timezone shifts).
+  function monthYearLabel(ym) {
+    const m = String(ym || "").match(/^(\d{4})-(\d{2})/);
+    if (!m) return String(ym || "");
+    return `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][+m[2] - 1]} ${m[1]}`;
   }
 
   function renderDataStoredTable(table, readings) {
@@ -495,7 +642,7 @@ const App = (() => {
   function renderBrandGrid() {
     const grid = qs("brandGrid");
     grid.innerHTML = "";
-    Object.values(BRANDS).forEach(b => {
+    Object.values(BRANDS).filter(b => !b.manual).forEach(b => { // Excel-import companies are made from the import, not here
       const card = document.createElement("button");
       card.type = "button";
       card.className = "brand-card";
@@ -622,7 +769,7 @@ const App = (() => {
       qs("btnTestConnect").textContent = "Test & Connect";
     }
 
-    const conn = { companyName, brand: pendingBrand, credentials: creds, stations, dailyAutoExtract: false, cursor: {} };
+    const conn = { companyName, brand: pendingBrand, credentials: creds, stations, cursor: {} };
     try {
       await SheetsClient.saveConnection(conn);
     } catch (e) {
@@ -639,7 +786,7 @@ const App = (() => {
   function populateExtractionCompanySelect() {
     const sel = qs("extCompany");
     sel.innerHTML = `<option value="">Select a company…</option>`;
-    connections.forEach(c => {
+    connections.filter(c => !BRANDS[c.brand]?.manual).forEach(c => { // Excel-import companies have no API to extract from
       const opt = document.createElement("option");
       opt.value = c.id; opt.textContent = `${c.companyName} (${BRANDS[c.brand].label})`;
       sel.appendChild(opt);
