@@ -150,6 +150,27 @@ tbody tr:last-child td{border-bottom:none;}
 
 .banner{display:flex;gap:10px;align-items:center;background:#241c14;border:1px solid #3a2c16;border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:.85rem;color:#e5c98a;}
 .banner.banner-error{background:#2a1414;border-color:#4a1e1e;color:#f0a5a5;}
+
+/* Excel import */
+.import-stepper{display:flex;gap:6px;margin:0 0 16px;padding:0;list-style:none;font-size:.8rem;counter-reset:step;}
+.import-stepper li{flex:1;padding:8px 10px;border-radius:8px;background:var(--panel2);color:var(--muted);border:1px solid var(--line);counter-increment:step;}
+.import-stepper li::before{content:counter(step) ". ";}
+.import-stepper li.active{color:var(--accent);border-color:rgba(229,151,42,.35);background:rgba(229,151,42,.08);font-weight:600;}
+.import-stepper li.done{color:var(--ok);}
+.import-stepper li.done::before{content:"✓ ";}
+.import-file-grid{display:grid;grid-template-columns:1.4fr 1fr;gap:12px;}
+.import-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0 12px;margin-top:14px;}
+.map-sample{font-size:.78rem;color:var(--muted);line-height:1.6;}
+.map-sample .good{color:var(--ok);}
+.map-sample .bad{color:var(--err);}
+.import-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px;}
+.import-stat{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;}
+.import-stat b{display:block;font-size:1.15rem;}
+.import-stat span{font-size:.74rem;color:var(--muted);}
+#impSummary{font-size:.84rem;color:#c9d3e0;}
+.field input[type="file"]{padding:7px;cursor:pointer;}
+.audit-action[data-kind="import"]{background:rgba(58,192,214,.16);color:var(--sg);}
+@media (max-width:820px){.import-file-grid{grid-template-columns:1fr;}.import-stats{grid-template-columns:1fr 1fr;}}
 </style>
 </head>
 <body>
@@ -271,9 +292,12 @@ tbody tr:last-child td{border-bottom:none;}
     <!-- COMPARE -->
     <div class="view" id="view-compare">
       <div class="card">
-        <div class="card-head"><h3>Hourly vs Monthly</h3></div>
+        <div class="card-head">
+          <h3>Hourly vs Monthly</h3>
+          <button class="btn" id="btnImportFromCompare">⤒ Import Excel data</button>
+        </div>
         <div class="callout">
-          Sums Hourly-resolution readings into monthly totals per facility_id (grouped exactly like the Extraction tab's export settings) and compares them against Monthly-resolution readings already in your Google Sheet's <code>Readings</code> tab, flagging any month where they disagree by 0.005 kWh or more. Needs both Hourly and Monthly data already extracted for the same company.
+          Sums Hourly-resolution readings into monthly totals per facility_id (grouped exactly like the Extraction tab's export settings) and compares them against Monthly-resolution readings already in your Google Sheet's <code>Readings</code> tab, flagging any month where they disagree by 0.005 kWh or more. Needs both Hourly and Monthly data for the same company — extracted, or uploaded from a spreadsheet with <strong>Import Excel data</strong>.
         </div>
         <div class="extraction-grid" style="grid-template-columns:minmax(220px,1.6fr) 1fr 1fr 1fr;align-items:end;gap:12px;">
           <div class="field" style="margin:0;">
@@ -315,9 +339,12 @@ tbody tr:last-child td{border-bottom:none;}
     <!-- EXPORT -->
     <div class="view" id="view-export">
       <div class="card">
-        <div class="card-head"><h3>Export</h3></div>
+        <div class="card-head">
+          <h3>Export</h3>
+          <button class="btn" id="btnImportFromExport">⤒ Import Excel data</button>
+        </div>
         <div class="callout">
-          Reads whatever's already in the <code>Readings</code> tab — however it got there, a manual Extraction run, a multi-day quota-limited backfill, or nightly Daily-auto runs — and converts it for any date range you pick. Uses the same facility_id / meter_id / eac_registry_id settings already configured for this company — click it from the Dashboard to edit.
+          Reads whatever's already in the <code>Readings</code> tab — however it got there, a manual Extraction run, a multi-day quota-limited backfill, nightly Daily-auto runs, or a spreadsheet uploaded with <strong>Import Excel data</strong> — and converts it for any date range you pick. Uses the same facility_id / meter_id / eac_registry_id settings already configured for this company — click it from the Dashboard to edit.
         </div>
         <div class="extraction-grid" style="grid-template-columns:1.2fr 1fr .8fr .8fr;">
           <div class="field">
@@ -472,6 +499,70 @@ tbody tr:last-child td{border-bottom:none;}
   </div>
 </div>
 
+<!-- Excel import modal -->
+<div class="modal-overlay" id="importModalOverlay">
+  <div class="modal" style="max-width:940px;">
+    <div class="modal-top">
+      <h3>Import generation data from Excel</h3>
+      <button class="modal-close" id="btnImportClose" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-sub">Upload a spreadsheet, match its columns to the Readings columns, then save it to the Google Sheet. Compare and Export use it like extracted data.</div>
+    <ol class="import-stepper" id="importStepper">
+      <li>Choose file</li>
+      <li>Map columns</li>
+      <li>Preview &amp; save</li>
+    </ol>
+
+    <section id="importStepFile">
+      <div class="import-file-grid">
+        <div class="field"><label>Company</label><select id="impCompany"></select></div>
+        <div class="field"><label>Resolution of the data in the file</label>
+          <select id="impResolution">
+            <option value="Hourly">Hourly</option>
+            <option value="Daily">Daily</option>
+            <option value="Monthly">Monthly</option>
+          </select>
+        </div>
+      </div>
+      <div class="field"><label>Excel or CSV file</label><input type="file" id="impFile" accept=".xlsx,.xlsm,.xls,.csv,.txt"></div>
+      <div class="import-file-grid">
+        <div class="field" id="impSheetWrap" hidden><label>Sheet</label><select id="impSheet"></select></div>
+        <div class="field" id="impHeaderRowWrap" hidden><label>Column titles are on row</label><input type="number" id="impHeaderRow" min="1" step="1"></div>
+      </div>
+      <div id="impFileInfo"></div>
+    </section>
+
+    <section id="importStepMap" hidden>
+      <div class="field-help" id="impMapNote" style="margin:0 0 10px;"></div>
+      <div class="table-scroll"><table id="impMapTable"></table></div>
+      <div class="import-options" id="impOptions"></div>
+    </section>
+
+    <section id="importStepPreview" hidden>
+      <div id="impSummary"></div>
+      <div class="field" id="impExistingWrap" hidden style="max-width:420px;margin-top:10px;">
+        <label>Readings already in the Sheet</label>
+        <select id="impExisting">
+          <option value="keep">Keep the Sheet's values — only add new readings</option>
+          <option value="replace">Replace with the file's values</option>
+        </select>
+      </div>
+      <div class="table-scroll" style="max-height:180px;margin-top:10px;"><table id="impStationTable"></table></div>
+      <div class="field-help" id="impPreviewCaption" style="margin:12px 0 6px;"></div>
+      <div class="table-scroll" style="max-height:260px;"><table id="impPreviewTable"></table></div>
+      <div id="impSaveCount" style="font-size:.85rem;color:var(--muted);margin-top:12px;"></div>
+      <div class="job-bar" id="impProgress" hidden style="margin-top:10px;"><div class="job-bar-fill" id="impProgressFill"></div></div>
+    </section>
+
+    <div class="modal-actions" style="align-items:center;">
+      <span id="impStatus" style="font-size:.82rem;margin-right:auto;"></span>
+      <button class="btn" id="btnImportCancel">Cancel</button>
+      <button class="btn" id="btnImportBack" hidden>Back</button>
+      <button class="btn btn-primary" id="btnImportNext">Next: map columns</button>
+    </div>
+  </div>
+</div>
+
 <!-- Extraction lock -->
 <div class="modal-overlay" id="extLockOverlay" style="z-index:60;">
   <div class="modal" style="max-width:560px;margin-top:10vh;">
@@ -536,7 +627,8 @@ tbody tr:last-child td{border-bottom:none;}
 <script src="js/sheets-client.js?v=20260930k"></script>
 <script src="js/templates.js?v=20260930k"></script>
 <script src="js/compare.js?v=20260930k"></script>
+<script src="js/import.js?v=20261001a"></script>
 <script src="js/extraction.js?v=20260930k"></script>
-<script src="js/app.js?v=20260930k"></script>
+<script src="js/app.js?v=20261001a"></script>
 </body>
 </html>
