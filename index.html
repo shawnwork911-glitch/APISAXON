@@ -182,10 +182,13 @@ tbody tr:last-child td{border-bottom:none;}
 .grouping-block{margin-top:14px;padding-top:12px;border-top:1px dashed var(--line);}
 .grouping-block:empty{display:none;}
 .grp-custom{max-width:520px;max-height:180px;overflow-y:auto;background:#0f141c;border:1px solid var(--line);border-radius:8px;padding:6px 10px;margin-top:8px;}
-.grp-row{display:flex;align-items:flex-start;gap:8px;font-size:.84rem;padding:5px 0;cursor:pointer;border-bottom:1px solid var(--line);}
-.grp-row:last-child{border-bottom:none;}
-.grp-row input{margin-top:3px;}
-.grp-names{display:block;font-size:.76rem;color:var(--muted);}
+.grp-custom{max-height:320px;}
+.grp-agg{padding:6px 0 8px;border-bottom:1px solid var(--line);}
+.grp-agg:last-child{border-bottom:none;}
+.grp-agg-head{display:flex;align-items:center;gap:8px;font-size:.86rem;cursor:pointer;padding:3px 0;}
+.grp-row{display:flex;align-items:flex-start;gap:8px;font-size:.82rem;padding:3px 0 3px 26px;cursor:pointer;}
+.grp-row input{margin-top:2px;}
+.grp-names{font-size:.76rem;color:var(--muted);margin-left:4px;}
 </style>
 </head>
 <body>
@@ -258,7 +261,7 @@ tbody tr:last-child td{border-bottom:none;}
         <div class="card-head"><h3>Manual / scheduled extraction</h3></div>
         <div class="callout">
           <strong>How this works</strong>
-          Pick a company, its stations, a data resolution and a date range, then queue the extraction. Calls are paced to each brand's daily quota and resumable — if a run stops partway (quota reached, tab closed), the next run continues from where it left off. Results are appended to the <strong>Readings</strong> tab of your Google Sheet, and can also be downloaded as a standalone Excel file per run — that download follows the <strong>AGG ID grouping</strong> chosen below (combined per AGG ID, per station, or a mix).
+          Pick a company, its stations, a data resolution and a date range, then queue the extraction. Calls are paced to each brand's daily quota and resumable — if a run stops partway (quota reached, tab closed), the next run continues from where it left off. Results are appended to the <strong>Readings</strong> tab of your Google Sheet, and can also be downloaded as a standalone Excel file per run. Every station is extracted and stored separately — stations sharing an AGG ID are never combined here; that's chosen on the Export tab.
         </div>
         <div class="extraction-grid">
           <div class="field">
@@ -293,7 +296,6 @@ tbody tr:last-child td{border-bottom:none;}
           </div>
           <button class="btn btn-primary" id="btnQueueExtraction">Queue extraction</button>
         </div>
-        <div id="extGroupingWrap" class="grouping-block"></div>
       </div>
 
       <div class="card">
@@ -313,7 +315,7 @@ tbody tr:last-child td{border-bottom:none;}
           <button class="btn" id="btnImportFromCompare">⤒ Import Excel data</button>
         </div>
         <div class="callout">
-          Sums Hourly-resolution readings into monthly totals per facility_id (AGG ID) — or per station, for any AGG ID you choose to keep separate under <strong>AGG ID grouping</strong> — and compares them against Monthly-resolution readings already in your Google Sheet's <code>Readings</code> tab, flagging any month where they disagree by 0.005 kWh or more. Needs both Hourly and Monthly data for the same company — extracted, or uploaded from a spreadsheet with <strong>Import Excel data</strong>.
+          Sums Hourly-resolution readings into monthly totals per facility_id (grouped exactly like the Extraction tab's export settings) and compares them against Monthly-resolution readings already in your Google Sheet's <code>Readings</code> tab, flagging any month where they disagree by 0.005 kWh or more. Needs both Hourly and Monthly data for the same company — extracted, or uploaded from a spreadsheet with <strong>Import Excel data</strong>.
         </div>
         <div class="extraction-grid" style="grid-template-columns:minmax(220px,1.6fr) 1fr 1fr 1fr;align-items:end;gap:12px;">
           <div class="field" style="margin:0;">
@@ -333,7 +335,6 @@ tbody tr:last-child td{border-bottom:none;}
             <select id="cmpToMonth"></select>
           </div>
         </div>
-        <div id="cmpGroupingWrap" class="grouping-block"></div>
         <div class="field-help" style="margin-top:6px;">Only rows in this range are read from the Sheet — a shorter range is faster and lighter on the proxy.</div>
         <div style="margin-top:12px;">
           <button class="btn btn-primary" id="btnRunCompare">Run comparison</button>
@@ -632,10 +633,10 @@ tbody tr:last-child td{border-bottom:none;}
 <script src="js/proxy-client.js?v=20260930k"></script>
 <script src="js/datepicker.js?v=20260930k"></script>
 <script src="js/sheets-client.js?v=20260930k"></script>
-<script src="js/templates.js?v=20261005a"></script>
-<script src="js/compare.js?v=20261005a"></script>
+<script src="js/templates.js?v=20261005b"></script>
+<script src="js/compare.js?v=20261005b"></script>
 <script src="js/import.js?v=20261002e"></script>
 <script src="js/extraction.js?v=20260930k"></script>
-<script src="js/app.js?v=20261005a"></script>
+<script src="js/app.js?v=20261005b"></script>
 </body>
 </html>
