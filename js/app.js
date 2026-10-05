@@ -171,7 +171,7 @@ const App = (() => {
     qs("btnDownloadCompare").addEventListener("click", handleDownloadCompare);
     qs("btnRunExport").addEventListener("click", handleRunExport);
     qs("btnResumeAll").addEventListener("click", handleResumeAll);
-    qs("expResolution").addEventListener("change", syncExportFieldVisibility);
+    qs("expResolution").addEventListener("change", () => { syncExportFieldVisibility(); refreshExportMonths(); });
     qs("expCompany").addEventListener("change", handleExportCompanyChange);
 
     // Excel import — same modal from both tabs, pre-set to whatever that tab has selected.
@@ -200,6 +200,7 @@ const App = (() => {
     } else if (currentView === "export") {
       populateExportCompanySelect();
       qs("expCompany").value = id;
+      handleExportCompanyChange(); // new months may have been imported
     }
   }
 
@@ -1296,12 +1297,50 @@ const App = (() => {
 
   function handleExportCompanyChange() {
     renderGroupingPicker("expGroupingWrap", connections.find(c => c.id === qs("expCompany").value));
+    refreshExportMonths();
   }
 
   function syncExportFieldVisibility() {
     const isHourly = qs("expResolution").value === "Hourly";
     qs("expTemplateWrap").hidden = !isHourly;
     qs("expMonthlyNote").hidden = isHourly;
+    // Monthly picks whole months from a list; Hourly keeps the day-level date pickers.
+    ["expStartDateField", "expEndDateField"].forEach(id => { qs(id).hidden = !isHourly; });
+    ["expStartMonthField", "expEndMonthField"].forEach(id => { qs(id).hidden = isHourly; });
+  }
+
+  // Monthly export: Start / End month lists hold only the months that actually
+  // have Monthly data in the Readings tab for the selected company, newest first.
+  // Defaults to the whole range (earliest → latest), keeping any months already
+  // picked if they're still in the list.
+  let exportMonthsSeq = 0;
+  async function refreshExportMonths() {
+    if (qs("expResolution").value !== "Monthly") return;
+    const from = qs("expFromMonth"), to = qs("expToMonth");
+    const keep = { from: from.value, to: to.value };
+    const setPlaceholder = (text) => {
+      from.innerHTML = to.innerHTML = `<option value="">${escapeHtml(text)}</option>`;
+      from.disabled = to.disabled = true;
+    };
+    const conn = connections.find(c => c.id === qs("expCompany").value);
+    if (!conn) { setPlaceholder("Select a company first"); return; }
+    const seq = ++exportMonthsSeq; // ignore answers for a company/resolution no longer selected
+    setPlaceholder("Checking extracted months…");
+    let months = [];
+    try {
+      months = ((await getReadingsSummary(conn)).Monthly?.months || []).slice().sort();
+    } catch (e) {
+      if (seq === exportMonthsSeq) setPlaceholder(`Could not read months: ${e.message}`);
+      return;
+    }
+    if (seq !== exportMonthsSeq || qs("expResolution").value !== "Monthly") return;
+    if (!months.length) { setPlaceholder("No Monthly data extracted yet"); return; }
+    const label = (v) => { const [y, m] = v.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleString("en-GB", { month: "short", year: "numeric" }); };
+    const html = months.slice().reverse().map(v => `<option value="${v}">${label(v)}</option>`).join("");
+    from.innerHTML = to.innerHTML = html;
+    from.disabled = to.disabled = false;
+    from.value = months.includes(keep.from) ? keep.from : months[0];
+    to.value = months.includes(keep.to) ? keep.to : months[months.length - 1];
   }
 
   async function handleRunExport() {
@@ -1309,10 +1348,19 @@ const App = (() => {
     const conn = connections.find(c => c.id === id);
     if (!conn) { alert("Pick a company first."); return; }
     const resolution = qs("expResolution").value;
-    const startDate = DatePicker.getISO(qs("expStart"));
-    const endDate = DatePicker.getISO(qs("expEnd"));
-    if (!startDate || !endDate) { alert("Pick a start and end date."); return; }
-    if (endDate < startDate) { alert(`End date (${endDate}) is before start date (${startDate}) — please fix the range.`); return; }
+    let startDate, endDate;
+    if (resolution === "Monthly") {
+      const fromMonth = qs("expFromMonth").value, toMonth = qs("expToMonth").value;
+      if (!fromMonth || !toMonth) { alert("Pick a start and end month."); return; }
+      if (toMonth < fromMonth) { alert(`End month (${toMonth}) is before start month (${fromMonth}) — please fix the range.`); return; }
+      startDate = `${fromMonth}-01`;            // whole months, start and end inclusive
+      endDate = monthEnd(`${toMonth}-01`);
+    } else {
+      startDate = DatePicker.getISO(qs("expStart"));
+      endDate = DatePicker.getISO(qs("expEnd"));
+      if (!startDate || !endDate) { alert("Pick a start and end date."); return; }
+      if (endDate < startDate) { alert(`End date (${endDate}) is before start date (${startDate}) — please fix the range.`); return; }
+    }
 
     qs("btnRunExport").disabled = true;
     qs("expStatus").textContent = `Reading ${resolution} rows from your Google Sheet…`;
