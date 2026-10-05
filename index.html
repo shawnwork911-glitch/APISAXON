@@ -376,14 +376,22 @@ tbody tr:last-child td{border-bottom:none;}
               <option value="Monthly">Monthly</option>
             </select>
           </div>
-          <div class="field">
+          <div class="field" id="expStartMonthField" hidden>
+            <label>Start month</label>
+            <select id="expFromMonth" disabled><option value="">Select a company first</option></select>
+          </div>
+          <div class="field" id="expStartDateField">
             <label>Start date</label>
             <div class="date-field-wrap">
               <input type="text" id="expStart" class="date-input" placeholder="dd/mm/yyyy" readonly autocomplete="off">
               <button type="button" class="date-picker-btn" data-target="expStart" aria-label="Open calendar">📅</button>
             </div>
           </div>
-          <div class="field">
+          <div class="field" id="expEndMonthField" hidden>
+            <label>End month</label>
+            <select id="expToMonth" disabled><option value="">Select a company first</option></select>
+          </div>
+          <div class="field" id="expEndDateField">
             <label>End date</label>
             <div class="date-field-wrap">
               <input type="text" id="expEnd" class="date-input" placeholder="dd/mm/yyyy" readonly autocomplete="off">
@@ -399,7 +407,7 @@ tbody tr:last-child td{border-bottom:none;}
           </select>
         </div>
         <div id="expGroupingWrap" class="grouping-block"></div>
-        <div id="expMonthlyNote" hidden class="field-help" style="margin-top:8px;">Monthly uses one fixed format — no template choice needed: <code>GEN ID, stationName, collectTime, PVYield</code>, one row per station per month.</div>
+        <div id="expMonthlyNote" hidden class="field-help" style="margin-top:8px;">Start / End month only list months that already have Monthly data for this company. Monthly uses one fixed format — no template choice needed: <code>GEN ID, stationName, collectTime, PVYield</code>, one row per station per month.</div>
         <div style="margin-top:12px;">
           <button class="btn btn-primary" id="btnRunExport">Build export</button>
           <span id="expStatus" style="font-size:.82rem;color:var(--muted);margin-left:10px;"></span>
@@ -633,10 +641,10 @@ tbody tr:last-child td{border-bottom:none;}
 <script src="js/proxy-client.js?v=20260930k"></script>
 <script src="js/datepicker.js?v=20260930k"></script>
 <script src="js/sheets-client.js?v=20260930k"></script>
-<script src="js/templates.js?v=20261005b"></script>
-<script src="js/compare.js?v=20261005b"></script>
+<script src="js/templates.js?v=20261005c"></script>
+<script src="js/compare.js?v=20261005c"></script>
 <script src="js/import.js?v=20261002e"></script>
 <script src="js/extraction.js?v=20260930k"></script>
-<script src="js/app.js?v=20261005b"></script>
+<script src="js/app.js?v=20261005c"></script>
 </body>
 </html>
