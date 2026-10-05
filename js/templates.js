@@ -81,32 +81,34 @@ const TemplateExport = (() => {
   }
 
   /**
-   * GROUPING — which stations under one facility_id (AGG ID) get combined.
-   * grouping: { mode: "combined" | "separate" | "custom", split: [facilityId, …] }
+   * GROUPING (Export only) — which stations under one facility_id (AGG ID) are summed together.
+   * grouping: { mode: "combined" | "separate" | "custom", separate: [stationId, …] }
    *   combined  every station sharing an AGG ID is summed together (default, old behaviour)
    *   separate  every station is kept on its own
-   *   custom    AGG IDs listed in `split` are kept per station, the rest combined
-   * Returns { key, facilityId, stationId } — stationId is null when combined.
+   *   custom    stations listed in `separate` are kept on their own; the rest of
+   *             their AGG ID's stations are still summed together
+   * Returns { key, facilityId, stationId } — stationId is null for a combined group.
    * A station with no AGG ID assigned is already its own group either way.
    */
   function groupFor(stationId, settings, grouping) {
     const facilityId = facilityKeyFor(stationId, settings);
-    if (facilityId === stationId) return { key: facilityId, facilityId, stationId: null };
-    if (!isSplit(facilityId, grouping)) return { key: facilityId, facilityId, stationId: null };
+    if (facilityId === stationId || !isSeparate(stationId, grouping)) return { key: facilityId, facilityId, stationId: null };
     return { key: `${facilityId}\u0001${stationId}`, facilityId, stationId };
   }
-  function isSplit(facilityId, grouping) {
+  function isSeparate(stationId, grouping) {
     const mode = grouping?.mode || "combined";
-    return mode === "separate" || (mode === "custom" && (grouping.split || []).includes(facilityId));
+    return mode === "separate" || (mode === "custom" && (grouping.separate || []).includes(stationId));
   }
-  function describeGrouping(grouping) {
+  // Short text for summaries and the audit log. stationNames: { stationId: name }.
+  function describeGrouping(grouping, stationNames = {}) {
     const mode = grouping?.mode || "combined";
-    if (mode === "separate") return "AGG IDs split per station";
+    if (mode === "separate") return "every station separate";
     if (mode === "custom") {
-      const split = grouping.split || [];
-      return split.length ? `split per station: ${split.join(", ")} · others combined` : "all AGG IDs combined";
+      const sep = grouping.separate || [];
+      return sep.length ? `kept separate: ${sep.map(id => stationNames[id] || id).join(", ")} · rest combined by AGG ID`
+        : "all stations combined by AGG ID";
     }
-    return "AGG IDs combined";
+    return "all stations combined by AGG ID";
   }
 
   /**
@@ -116,7 +118,8 @@ const TemplateExport = (() => {
    * settings: from defaultSettings(), edited by the user — see facility grouping above.
    * grouping: see groupFor() — omitted means combined per AGG ID.
    * stationNames: optional { stationId: name } for labelling split groups.
-   * Returns an array of { key, facilityId, stationId, stationName, headers, rows },
+   * Returns an array of { key, facilityId, stationId, stationName, members, headers, rows }
+   * (members = names of the stations summed into it),
    * one per group, each internally summed to one row per hour and sorted
    * earliest → latest. The facility_id / meter_id columns always carry the
    * AGG ID, even when a facility is split per station.
@@ -133,13 +136,14 @@ const TemplateExport = (() => {
       const localTrick = wcToTrickEpoch(hourWc);
       const g = groupFor(row.stationId, settings, grouping);
 
-      if (!buckets.has(g.key)) buckets.set(g.key, { g, hours: new Map() });
+      if (!buckets.has(g.key)) buckets.set(g.key, { g, hours: new Map(), members: new Set() });
+      buckets.get(g.key).members.add(stationNames[row.stationId] || row.stationName || row.stationId);
       const hourMap = buckets.get(g.key).hours;
       hourMap.set(localTrick, (hourMap.get(localTrick) || 0) + (row.kwh || 0));
     }
 
     const groups = [];
-    for (const { g, hours: hourMap } of buckets.values()) {
+    for (const { g, hours: hourMap, members } of buckets.values()) {
       const facilityId = g.facilityId;
       const groupSettings = (settings.facilityGroups || {})[facilityId] || {};
       const entries = [...hourMap.entries()].sort((a, b) => a[0] - b[0]);
@@ -156,14 +160,14 @@ const TemplateExport = (() => {
         return [fmtISOWithOffset(wc, settings.utcOffset), settings.tzLabel, fmtISOZ(utcWc), value,
                 settings.unitOM, groupSettings.meterId || facilityId, facilityId, groupSettings.eacRegistryId || "tigr"];
       });
-      groups.push({ key: g.key, facilityId, stationId: g.stationId,
+      groups.push({ key: g.key, facilityId, stationId: g.stationId, members: [...members].sort(),
         stationName: g.stationId ? (stationNames[g.stationId] || g.stationId) : "", headers, rows: outRows });
     }
     groups.sort((a, b) => a.facilityId.localeCompare(b.facilityId) || a.stationName.localeCompare(b.stationName));
     return groups;
   }
 
-  return { headersFor, defaultSettings, facilityKeyFor, groupFor, isSplit, describeGrouping, build, wallClockFromRow };
+  return { headersFor, defaultSettings, facilityKeyFor, groupFor, isSeparate, describeGrouping, build, wallClockFromRow };
 })();
 
 if (typeof module !== "undefined") module.exports = TemplateExport;

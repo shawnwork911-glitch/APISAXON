@@ -9,9 +9,7 @@
    Facility grouping matches TemplateExport exactly (same stationFacility
    mapping, same "unassigned station falls back to its own stationId"
    rule) — a facility with multiple stations has ALL of their Hourly rows
-   summed, and ALL of their Monthly rows summed, before comparing —
-   unless the grouping option splits that AGG ID, in which case each
-   station's Hourly is compared against that same station's Monthly.
+   summed, and ALL of their Monthly rows summed, before comparing.
 
    Hourly coverage — why it matters:
    A month that has a Monthly figure but NO Hourly rows at all simply
@@ -80,10 +78,6 @@ const CompareEngine = (() => {
    * Resolution mixed together; this filters to Hourly/Monthly itself.
    * conn: the connection object (for its templateSettings — facility
    * mapping and UTC offset).
-   * grouping: TemplateExport grouping — which AGG IDs are combined and which
-   * are compared station by station. Omitted means everything combined.
-   * Every result row carries facilityId (the AGG ID) plus stationId /
-   * stationName, which are blank for a combined row.
    * Returns {
    *   flagged: [...],          // months with a real gap
    *   notExtracted: [...],     // Monthly exists, Hourly never extracted — not checked
@@ -91,14 +85,9 @@ const CompareEngine = (() => {
    *   hourlyMonths, monthlyMonths
    * }.
    */
-  function compareHourlyVsMonthly(readings, conn, grouping) {
+  function compareHourlyVsMonthly(readings, conn) {
     const settings = conn.templateSettings || {};
     const utcOffset = settings.utcOffset ?? 8;
-    const stationNames = Object.fromEntries((conn.stations || []).map(s => [s.id, s.name]));
-    const groupMeta = new Map(); // group key -> { facilityId, stationId, stationName }
-    // Maps below are keyed `${groupKey}|${month}`; the month never contains "|",
-    // so splitting at the LAST "|" is safe whatever the AGG ID looks like.
-    const splitKey = (key) => { const i = key.lastIndexOf("|"); return { ...groupMeta.get(key.slice(0, i)), month: key.slice(i + 1) }; };
 
     const hourlySum = new Map();   // `${facilityId}|${month}` -> summed kWh
     const hourlyDays = new Map();  // `${facilityId}|${month}` -> Set of day-of-month with Hourly rows
@@ -118,10 +107,8 @@ const CompareEngine = (() => {
         continue;
       }
       const month = `${wc.y}-${pad(wc.mo)}`;
-      const g = TemplateExport.groupFor(r.stationId, settings, grouping);
-      if (!groupMeta.has(g.key)) groupMeta.set(g.key, { facilityId: g.facilityId, stationId: g.stationId || "",
-        stationName: g.stationId ? (stationNames[g.stationId] || r.stationName || g.stationId) : "" });
-      const key = `${g.key}|${month}`;
+      const facilityId = TemplateExport.facilityKeyFor(r.stationId, settings);
+      const key = `${facilityId}|${month}`;
       const kwh = Number(r.kwh) || 0;
       if (res === "Hourly") {
         hourlySum.set(key, (hourlySum.get(key) || 0) + kwh);
@@ -148,14 +135,13 @@ const CompareEngine = (() => {
     };
 
     for (const [key, monthlyKwhRaw] of monthlySum.entries()) {
-      const { facilityId, stationId, stationName, month } = splitKey(key);
-      const who = { facilityId, stationId, stationName };
+      const [facilityId, month] = key.split("|");
       const monthlyKwh = round2(monthlyKwhRaw);
       const days = hourlyDays.get(key);
 
       // Monthly figure only — Hourly was never extracted for this month.
       if (!days || !days.size) {
-        notExtracted.push({ ...who, month, monthlyKwh, missingRanges: monthRange(month),
+        notExtracted.push({ facilityId, month, monthlyKwh, missingRanges: monthRange(month),
           monthlyAsOf: localDateOf(monthlyRunAt.get(key)) });
         continue;
       }
@@ -177,7 +163,7 @@ const CompareEngine = (() => {
       // was silently reported as "no discrepancies".)
       const monthlyAsOfOk = localDateOf(monthlyRunAt.get(key));
       if (complete && !hasGap && !zeroBoth) {
-        ok.push({ ...who, month, kind: "ok", monthlyKwh, hourlyKwh: round2(hourlyKwh), diffKwh, diffPct, hasGap: false,
+        ok.push({ facilityId, month, kind: "ok", monthlyKwh, hourlyKwh: round2(hourlyKwh), diffKwh, diffPct, hasGap: false,
           hourlyCoverage: `${coveredDays}/${totalDays} days`, missingDays: [], missingRanges: "",
           monthlyAsOf: monthlyAsOfOk, monthlyStale: false, complete: true, issue: "OK — hourly matches monthly" });
         continue;
@@ -209,7 +195,7 @@ const CompareEngine = (() => {
       if (monthlyStale) issues.push(`Monthly figure fetched ${monthlyAsOf}, before the month's hourly data ended (${lastHourlyDate}) — re-run the Monthly extraction for ${month}`);
 
       flagged.push({
-        ...who, month, kind,
+        facilityId, month, kind,
         monthlyKwh, hourlyKwh: round2(hourlyKwh),
         diffKwh, diffPct, hasGap,
         hourlyCoverage: `${coveredDays}/${totalDays} days`,
@@ -225,16 +211,15 @@ const CompareEngine = (() => {
     // Hourly months with no Monthly figure at all — nothing to compare against.
     for (const [key, days] of hourlyDays.entries()) {
       if (monthlySum.has(key)) continue;
-      const { facilityId, stationId, stationName, month } = splitKey(key);
+      const [facilityId, month] = key.split("|");
       const [y, mo] = month.split("-").map(Number);
       const total = daysInMonth(y, mo), miss = [];
       for (let day = 1; day <= total; day++) if (!days.has(day)) miss.push(`${month}-${pad(day)}`);
-      monthlyMissing.push({ facilityId, stationId, stationName, month, hourlyKwh: round2(hourlySum.get(key) || 0),
+      monthlyMissing.push({ facilityId, month, hourlyKwh: round2(hourlySum.get(key) || 0),
         hourlyCoverage: `${days.size}/${total} days`, missingRanges: compressDays(miss, today) });
     }
 
-    const byFacMonth = (a, b) => a.facilityId.localeCompare(b.facilityId)
-      || a.stationName.localeCompare(b.stationName) || a.month.localeCompare(b.month);
+    const byFacMonth = (a, b) => a.facilityId.localeCompare(b.facilityId) || a.month.localeCompare(b.month);
     // Real kWh gaps first (largest first), then coverage/zero issues by facility and month.
     flagged.sort((a, b) => (b.hasGap && b.complete) - (a.hasGap && a.complete)
       || ((a.hasGap && a.complete) ? Math.abs(b.diffKwh) - Math.abs(a.diffKwh) : byFacMonth(a, b)));
