@@ -172,6 +172,7 @@ const App = (() => {
     qs("btnRunExport").addEventListener("click", handleRunExport);
     qs("btnResumeAll").addEventListener("click", handleResumeAll);
     qs("expResolution").addEventListener("change", syncExportFieldVisibility);
+    qs("expCompany").addEventListener("change", handleExportCompanyChange);
 
     // Excel import — same modal from both tabs, pre-set to whatever that tab has selected.
     ExcelImport.init({
@@ -605,9 +606,8 @@ const App = (() => {
       await SheetsClient.saveConnection(conn);
       qs("stationsModalSavedNote").textContent = "Saved.";
       stationsModalDirty = true;
-      // Keep the Extraction tab's own working copy in sync if it's currently
-      // showing this same company, so switching tabs doesn't show stale data.
-      if (qs("extCompany").value === conn.id) loadTemplateSettingsIntoForm(conn);
+      // AGG IDs may have changed — refresh any grouping picker showing this company.
+      refreshGroupingPickers(conn.id);
     } catch (e) {
       qs("stationsModalSavedNote").textContent = `Could not save: ${e.message}`;
       qs("stationsModalSavedNote").style.color = "var(--err)";
@@ -791,6 +791,94 @@ const App = (() => {
       opt.value = c.id; opt.textContent = `${c.companyName} (${BRANDS[c.brand].label})`;
       sel.appendChild(opt);
     });
+    renderGroupingPicker("extGroupingWrap", null);
+  }
+
+  /* ---------------------------- AGG ID grouping picker ---------------------------- */
+  // One choice per company, shared by Extraction (its Download Excel), Compare
+  // and Export, so picking "separate" on one tab carries over to the others.
+  // Kept for this session only — it doesn't change the company's saved settings.
+  //   combined  stations sharing an AGG ID (facility_id) are summed (the old behaviour)
+  //   separate  every station on its own
+  //   custom    tick which AGG IDs to combine; unticked ones are split per station
+  const groupingByConn = {};
+  const GROUPING_WRAPS = ["extGroupingWrap", "cmpGroupingWrap", "expGroupingWrap"];
+
+  function getGrouping(connId) {
+    return groupingByConn[connId] || { mode: "combined", split: [] };
+  }
+
+  function stationNameMap(conn) {
+    return Object.fromEntries((conn?.stations || []).map(s => [s.id, s.name]));
+  }
+
+  // AGG IDs that actually have more than one station — the only ones where
+  // combining vs splitting makes a difference.
+  function multiStationAggIds(conn) {
+    const byAgg = new Map();
+    for (const st of conn.stations || []) {
+      const agg = TemplateExport.facilityKeyFor(st.id, conn.templateSettings || {});
+      if (agg === st.id) continue; // no AGG ID assigned — always on its own
+      if (!byAgg.has(agg)) byAgg.set(agg, []);
+      byAgg.get(agg).push(st.name || st.id);
+    }
+    return [...byAgg.entries()].filter(([, names]) => names.length > 1).sort((a, b) => a[0].localeCompare(b[0]));
+  }
+
+  function renderGroupingPicker(wrapId, conn) {
+    const wrap = qs(wrapId);
+    if (!wrap) return;
+    if (!conn) { wrap.innerHTML = ""; wrap.dataset.conn = ""; return; }
+    wrap.dataset.conn = conn.id;
+    const g = getGrouping(conn.id);
+    const multi = multiStationAggIds(conn);
+    const opt = (v, label) => `<option value="${v}"${g.mode === v ? " selected" : ""}>${label}</option>`;
+    const customList = g.mode === "custom" && multi.length
+      ? `<div class="grp-custom">${multi.map(([agg, names]) => `
+          <label class="grp-row"><input type="checkbox" data-agg="${escapeHtml(agg)}"${(g.split || []).includes(agg) ? "" : " checked"}>
+            <span><strong>${escapeHtml(agg)}</strong> <span class="grp-names">${names.length} stations: ${escapeHtml(names.join(", "))}</span></span></label>`).join("")}
+         </div><div class="field-help">Ticked = combined into one. Unticked = each station kept separate.</div>`
+      : "";
+    const note = multi.length
+      ? (g.mode === "custom" ? "" : `<div class="field-help">${multi.length} AGG ID(s) here have more than one station.</div>`)
+      : `<div class="field-help">No AGG ID has more than one station in this company, so this choice makes no difference.</div>`;
+    wrap.innerHTML = `<div class="field" style="margin:0;max-width:520px;">
+        <label>AGG ID grouping</label>
+        <select class="grp-mode">
+          ${opt("combined", "Combine stations by AGG ID")}
+          ${opt("separate", "Keep every station separate")}
+          ${opt("custom", "Choose which AGG IDs to combine…")}
+        </select>
+      </div>${customList}${note}`;
+
+    wrap.querySelector(".grp-mode").addEventListener("change", (e) => {
+      const prev = getGrouping(conn.id);
+      setGrouping(conn, { mode: e.target.value, split: prev.split || [] });
+    });
+    wrap.querySelectorAll("input[data-agg]").forEach(cb => cb.addEventListener("change", () => {
+      const split = [...wrap.querySelectorAll("input[data-agg]")].filter(x => !x.checked).map(x => x.dataset.agg);
+      setGrouping(conn, { mode: "custom", split });
+    }));
+  }
+
+  function setGrouping(conn, grouping) {
+    groupingByConn[conn.id] = grouping;
+    refreshGroupingPickers(conn.id);
+    // Results already on screen were built with the old choice.
+    if (lastCompareResult?.conn.id === conn.id && !qs("cmpResultsCard").hidden)
+      qs("cmpStatus").textContent = "AGG ID grouping changed — click Run comparison to update the results.";
+    if (qs("expCompany").value === conn.id && !qs("expResultsCard").hidden)
+      qs("expStatus").textContent = "AGG ID grouping changed — click Build export to update the files.";
+  }
+
+  function refreshGroupingPickers(connId) {
+    const conn = connections.find(c => c.id === connId);
+    GROUPING_WRAPS.forEach(id => { if (qs(id)?.dataset.conn === connId) renderGroupingPicker(id, conn); });
+  }
+
+  // Group label used in tables, file lists and the audit log.
+  function groupLabel(g) {
+    return g.stationName ? `${g.facilityId} · ${g.stationName}` : g.facilityId;
   }
 
   /* ---------------------------- compare (hourly vs monthly) ---------------------------- */
@@ -864,6 +952,7 @@ const App = (() => {
 
   async function refreshComparePeriods() {
     const conn = connections.find(c => c.id === qs("cmpCompany").value);
+    renderGroupingPicker("cmpGroupingWrap", conn);
     if (!conn) { setComparePeriodPlaceholder("Select a company first"); return; }
     const seq = ++comparePeriodSeq; // ignore answers for a company that's no longer selected
     const keep = qs("cmpPeriod").value;
@@ -975,20 +1064,21 @@ const App = (() => {
       const rawReadings = dedupeReadings(await SheetsClient.listReadings(conn.companyName, { fromDate, toDate }))
         .filter(r => { const d = String(r.timestamp).trim().slice(0, 10); return !/^\d{4}-\d{2}-\d{2}$/.test(d) || (d >= fromDate && d <= toDate); });
       const readings = normalizeReadingsForTemplates(rawReadings, conn.brand, conn.templateSettings?.utcOffset);
-      let result = CompareEngine.compareHourlyVsMonthly(readings, conn);
+      const grouping = getGrouping(conn.id);
+      let result = CompareEngine.compareHourlyVsMonthly(readings, conn, grouping);
       // If the engine parses the readable "YYYY-MM-DD HH:MM:SS" strings itself
       // (rather than via wallClockFromRow), the epoch-converted copy would read
       // as no data — so fall back to the rows exactly as stored.
       const hasHourly = rawReadings.some(r => String(r.resolution).trim() === "Hourly");
       const hasMonthly = rawReadings.some(r => String(r.resolution).trim() === "Monthly");
       if ((hasHourly && !result.hourlyMonths.length) || (hasMonthly && !result.monthlyMonths.length)) {
-        const alt = CompareEngine.compareHourlyVsMonthly(rawReadings.map(r => ({ ...r, kwh: Number(r.kwh) })), conn);
+        const alt = CompareEngine.compareHourlyVsMonthly(rawReadings.map(r => ({ ...r, kwh: Number(r.kwh) })), conn, grouping);
         if (alt.hourlyMonths.length + alt.monthlyMonths.length > result.hourlyMonths.length + result.monthlyMonths.length) result = alt;
       }
-      lastCompareResult = { conn, result, periodLabel };
+      lastCompareResult = { conn, result, periodLabel, grouping };
       renderCompareResults(conn, result);
       qs("cmpStatus").textContent = `Done — ${readings.length} row(s) read for ${periodLabel}${periodLabel.startsWith("Q") ? ` (${fromMonth} → ${toMonth})` : ""}.`;
-      Audit.log("Comparison", conn.companyName, `Hourly vs Monthly · ${periodLabel} · ${result.totalChecked} facility-month(s) checked · ${result.flagged.length} need attention · ${(result.notExtracted || []).length} hourly not extracted · ${(result.monthlyMissing || []).length} monthly missing`);
+      Audit.log("Comparison", conn.companyName, `Hourly vs Monthly · ${periodLabel} · ${TemplateExport.describeGrouping(grouping)} · ${result.totalChecked} facility-month(s) checked · ${result.flagged.length} need attention · ${(result.notExtracted || []).length} hourly not extracted · ${(result.monthlyMissing || []).length} monthly missing`);
     } catch (e) {
       qs("cmpStatus").textContent = `Failed: ${e.message}`;
     }
@@ -1004,14 +1094,14 @@ const App = (() => {
       ...(result.ok || []),
       ...result.flagged,
       ...(result.notExtracted || []).map(r => ({
-        facilityId: r.facilityId, month: r.month, kind: "notExtracted",
+        facilityId: r.facilityId, stationId: r.stationId, stationName: r.stationName, month: r.month, kind: "notExtracted",
         monthlyKwh: r.monthlyKwh, hourlyKwh: "", diffKwh: "", diffPct: "",
         hourlyCoverage: "0 days", missingRanges: r.missingRanges || "whole month",
         monthlyAsOf: r.monthlyAsOf || "", monthlyStale: false, complete: false,
         issue: "Hourly not extracted for this month — not checked",
       })),
       ...(result.monthlyMissing || []).map(r => ({
-        facilityId: r.facilityId, month: r.month, kind: "monthlyMissing",
+        facilityId: r.facilityId, stationId: r.stationId, stationName: r.stationName, month: r.month, kind: "monthlyMissing",
         monthlyKwh: "", hourlyKwh: r.hourlyKwh, diffKwh: "", diffPct: "",
         hourlyCoverage: r.hourlyCoverage, missingRanges: r.missingRanges || "",
         monthlyAsOf: "", monthlyStale: false, complete: !r.missingRanges,
@@ -1019,7 +1109,8 @@ const App = (() => {
           + (r.missingRanges ? " · some hourly days missing" : ""),
       })),
     ];
-    return rows.sort((a, b) => a.facilityId.localeCompare(b.facilityId) || a.month.localeCompare(b.month));
+    return rows.sort((a, b) => a.facilityId.localeCompare(b.facilityId)
+      || (a.stationName || "").localeCompare(b.stationName || "") || a.month.localeCompare(b.month));
   }
 
   const COMPARE_STATUS = {
@@ -1045,7 +1136,8 @@ const App = (() => {
     const stale = result.flagged.filter(f => f.monthlyStale);
 
     const lines = [];
-    let head = `Checked ${result.totalChecked} facility-month combination(s): `;
+    const groupingDesc = TemplateExport.describeGrouping(lastCompareResult?.grouping);
+    let head = `Checked ${result.totalChecked} facility-month combination(s) <span style="color:var(--muted);">(${escapeHtml(groupingDesc)})</span>: `;
     if (noHourly || noMonthly) {
       head += `<strong style="color:var(--warn);">Missing ${noHourly ? "Hourly" : "Monthly"} data entirely for this company — run that extraction first.</strong>`;
     } else {
@@ -1124,12 +1216,14 @@ const App = (() => {
     const table = qs("cmpResultsTable");
     if (!rows.length) { table.innerHTML = `<tbody><tr><td class="field-help">No rows match these filters.</td></tr></tbody>`; return; }
     const pctCell = (v) => v === "" ? "" : `${v}%`;
-    table.innerHTML = `<thead><tr><th>facility_id</th><th>Month</th><th>Status</th><th>Monthly report (kWh)</th><th>Hourly sum (kWh)</th><th>Diff (kWh)</th><th>Diff (%)</th><th>Hourly coverage</th><th>Missing days (no hourly data)</th><th>Monthly fetched</th><th>Details</th></tr></thead><tbody>` +
+    const combinedCell = `<span style="color:var(--muted);">combined</span>`;
+    table.innerHTML = `<thead><tr><th>facility_id</th><th>Station</th><th>Month</th><th>Status</th><th>Monthly report (kWh)</th><th>Hourly sum (kWh)</th><th>Diff (kWh)</th><th>Diff (%)</th><th>Hourly coverage</th><th>Missing days (no hourly data)</th><th>Monthly fetched</th><th>Details</th></tr></thead><tbody>` +
       rows.map(r => {
         const st = COMPARE_STATUS[r.kind] || { label: r.kind, color: "var(--muted)" };
         return `
         <tr>
           <td>${escapeHtml(r.facilityId)}</td>
+          <td>${r.stationName ? escapeHtml(r.stationName) : combinedCell}</td>
           <td style="white-space:nowrap;">${escapeHtml(r.month)}</td>
           <td style="white-space:nowrap;color:${st.color};font-weight:600;">${st.label}</td>
           <td>${r.monthlyKwh}</td>
@@ -1146,7 +1240,7 @@ const App = (() => {
   // "GEN3228: 2026-01 → 2026-06; GEN1111: 2026-03" — compact list of months per facility.
   function summarizeMonths(list) {
     const byFac = new Map();
-    list.forEach(x => { if (!byFac.has(x.facilityId)) byFac.set(x.facilityId, []); byFac.get(x.facilityId).push(x.month); });
+    list.forEach(x => { const k = groupLabel(x); if (!byFac.has(k)) byFac.set(k, []); byFac.get(k).push(x.month); });
     const next = (m) => { const [y, mo] = m.split("-").map(Number); return mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, "0")}`; };
     return [...byFac.entries()].map(([fac, months]) => {
       months.sort();
@@ -1161,14 +1255,14 @@ const App = (() => {
   function handleDownloadCompare() {
     if (!lastCompareResult) return;
     const { conn, result } = lastCompareResult;
-    Audit.log("Download comparison", conn.companyName, `${filteredCompareRows(result).length} row(s)${compareFilterDescription() ? ` · filtered by ${compareFilterDescription()}` : ""}`);
-    const headers = ["facility_id", "Month", "Status", "Monthly report (kWh)", "Hourly sum (kWh)", "Diff (kWh)", "Diff (%)", "Hourly coverage", "Missing days (no hourly data)", "Monthly fetched", "Details"];
-    const rows = filteredCompareRows(result).map(r => [r.facilityId, r.month, (COMPARE_STATUS[r.kind] || {}).label || r.kind,
+    Audit.log("Download comparison", conn.companyName, `${TemplateExport.describeGrouping(lastCompareResult.grouping)} · ${filteredCompareRows(result).length} row(s)${compareFilterDescription() ? ` · filtered by ${compareFilterDescription()}` : ""}`);
+    const headers = ["facility_id", "Station", "Month", "Status", "Monthly report (kWh)", "Hourly sum (kWh)", "Diff (kWh)", "Diff (%)", "Hourly coverage", "Missing days (no hourly data)", "Monthly fetched", "Details"];
+    const rows = filteredCompareRows(result).map(r => [r.facilityId, r.stationName || "(combined)", r.month, (COMPARE_STATUS[r.kind] || {}).label || r.kind,
       r.monthlyKwh, r.hourlyKwh, r.diffKwh, r.diffPct,
       r.hourlyCoverage || "", r.missingRanges || "none", r.monthlyAsOf || "", r.issue]);
-    if (!rows.length) rows.push(["No rows match these filters", "", "", "", "", "", "", "", "", "", ""]);
+    if (!rows.length) rows.push(["No rows match these filters", ...headers.slice(1).map(() => "")]);
     const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-    ws["!cols"] = [10, 9, 18, 14, 14, 11, 9, 13, 40, 13, 60].map(wch => ({ wch }));
+    ws["!cols"] = [10, 22, 9, 18, 14, 14, 11, 9, 13, 40, 13, 60].map(wch => ({ wch }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "HourlyVsMonthly");
     const period = (lastCompareResult.periodLabel || "").replace(/\s*→\s*/g, "_to_").replace(/\s+/g, "_");
@@ -1179,12 +1273,19 @@ const App = (() => {
 
   function populateExportCompanySelect() {
     const sel = qs("expCompany");
+    const keep = sel.value;
     sel.innerHTML = `<option value="">Select a company…</option>`;
     connections.forEach(c => {
       const opt = document.createElement("option");
       opt.value = c.id; opt.textContent = `${c.companyName} (${BRANDS[c.brand].label})`;
       sel.appendChild(opt);
     });
+    if (keep && connections.some(c => c.id === keep)) sel.value = keep;
+    handleExportCompanyChange();
+  }
+
+  function handleExportCompanyChange() {
+    renderGroupingPicker("expGroupingWrap", connections.find(c => c.id === qs("expCompany").value));
   }
 
   function syncExportFieldVisibility() {
@@ -1212,6 +1313,8 @@ const App = (() => {
         { fromDate: `${startDate.slice(0, 7)}-01`, toDate: endDate }));
       const brandKey = conn.brand;
       const readings = normalizeReadingsForTemplates(rawReadings, brandKey, conn.templateSettings?.utcOffset);
+      const grouping = getGrouping(conn.id);
+      const groupingDesc = TemplateExport.describeGrouping(grouping);
 
       if (resolution === "Hourly") {
         // Facility mapping (station→facility_id, meter_id, eac_registry_id) still
@@ -1227,9 +1330,9 @@ const App = (() => {
           const localDate = `${wc.y}-${String(wc.mo).padStart(2, "0")}-${String(wc.d).padStart(2, "0")}`;
           return localDate >= startDate && localDate <= endDate;
         });
-        const groups = TemplateExport.build(filtered, brandKey, baseSettings);
+        const groups = TemplateExport.build(filtered, brandKey, baseSettings, grouping, stationNameMap(conn));
         renderExportResults(conn, { resolution, template: baseSettings.template }, groups, filtered.length, "Hourly");
-        Audit.log("Export built", conn.companyName, `Hourly · Template ${baseSettings.template} · ${startDate} → ${endDate} · ${filtered.length} row(s) · ${groups.length} facility file(s)`);
+        Audit.log("Export built", conn.companyName, `Hourly · Template ${baseSettings.template} · ${startDate} → ${endDate} · ${groupingDesc} · ${filtered.length} row(s) · ${groups.length} file(s)`);
         qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.` + (filtered.length ? "" : exportDiagnostic(readings, resolution, brandKey, conn.templateSettings?.utcOffset ?? 8, startDate, endDate));
       } else {
         const settingsForFacility = conn.templateSettings || {};
@@ -1241,9 +1344,9 @@ const App = (() => {
           const rowMonth = `${wc.y}-${String(wc.mo).padStart(2, "0")}-01`;
           return rowMonth >= startMonth && rowMonth <= endDate;
         });
-        const groups = buildMonthlyExportGroups(filtered, brandKey, settingsForFacility);
+        const groups = buildMonthlyExportGroups(filtered, brandKey, settingsForFacility, grouping, stationNameMap(conn));
         renderExportResults(conn, { resolution, template: null }, groups, filtered.length, "Monthly");
-        Audit.log("Export built", conn.companyName, `Monthly · ${startDate} → ${endDate} · ${filtered.length} row(s) · ${groups.length} facility file(s)`);
+        Audit.log("Export built", conn.companyName, `Monthly · ${startDate} → ${endDate} · ${groupingDesc} · ${filtered.length} row(s) · ${groups.length} file(s)`);
         qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.` + (filtered.length ? "" : exportDiagnostic(readings, resolution, brandKey, conn.templateSettings?.utcOffset ?? 8, startDate, endDate));
       }
     } catch (e) {
@@ -1256,31 +1359,34 @@ const App = (() => {
   // row per STATION per month (not summed across stations sharing a
   // facility_id — stationName stays its own column), tagged with its
   // facility_id under the header "GEN ID" to match the reference format.
-  function buildMonthlyExportGroups(readings, brandKey, settings) {
+  // Combined AGG IDs: one file holding all their stations' rows. Split AGG IDs
+  // (see the AGG ID grouping picker): one file per station.
+  function buildMonthlyExportGroups(readings, brandKey, settings, grouping, stationNames = {}) {
     const headers = ["GEN ID", "stationName", "collectTime", "PVYield"];
-    const byFacility = new Map(); // facilityId -> rows[]
+    const byGroup = new Map(); // group key -> { g, entries }
     for (const r of readings) {
       const wc = TemplateExport.wallClockFromRow(r, brandKey, settings.utcOffset ?? 8);
       if (!wc) continue;
-      const facilityId = TemplateExport.facilityKeyFor(r.stationId, settings);
+      const g = TemplateExport.groupFor(r.stationId, settings, grouping);
       const collectTime = `${wc.y}-${String(wc.mo).padStart(2, "0")}-01 00:00:00`;
       const kwhR = Math.round((r.kwh || 0) * 100) / 100;
-      if (!byFacility.has(facilityId)) byFacility.set(facilityId, []);
-      byFacility.get(facilityId).push({ epoch: Date.UTC(wc.y, wc.mo - 1, 1), row: [facilityId, r.stationName, collectTime, kwhR] });
+      if (!byGroup.has(g.key)) byGroup.set(g.key, { g, entries: [] });
+      byGroup.get(g.key).entries.push({ epoch: Date.UTC(wc.y, wc.mo - 1, 1), row: [g.facilityId, r.stationName, collectTime, kwhR] });
     }
     const groups = [];
-    for (const [facilityId, entries] of byFacility.entries()) {
+    for (const { g, entries } of byGroup.values()) {
       entries.sort((a, b) => a.epoch - b.epoch);
-      groups.push({ facilityId, headers, rows: entries.map(e => e.row) });
+      groups.push({ key: g.key, facilityId: g.facilityId, stationId: g.stationId,
+        stationName: g.stationId ? (stationNames[g.stationId] || g.stationId) : "", headers, rows: entries.map(e => e.row) });
     }
-    groups.sort((a, b) => a.facilityId.localeCompare(b.facilityId));
+    groups.sort((a, b) => a.facilityId.localeCompare(b.facilityId) || a.stationName.localeCompare(b.stationName));
     return groups;
   }
 
   function renderExportResults(conn, exportKind, groups, rowCount, resolutionLabel) {
     qs("expResultsCard").hidden = false;
     qs("expSummary").innerHTML = groups.length
-      ? `${rowCount} ${resolutionLabel.toLowerCase()} row(s) in range, grouped into <strong>${groups.length}</strong> facility file(s).`
+      ? `${rowCount} ${resolutionLabel.toLowerCase()} row(s) in range, grouped into <strong>${groups.length}</strong> file(s) <span style="color:var(--muted);">(${escapeHtml(TemplateExport.describeGrouping(getGrouping(conn.id)))})</span>.`
       : `No ${resolutionLabel.toLowerCase()} rows found in that date range for this company.`;
 
     const list = qs("expFacilityList");
@@ -1291,18 +1397,18 @@ const App = (() => {
       const formatLabel = exportKind.resolution === "Hourly" ? `Template ${exportKind.template}` : "Monthly template";
       row.innerHTML = `
         <div>
-          <div style="font-weight:600;">${escapeHtml(g.facilityId)}</div>
-          <div class="meta">${g.rows.length} row(s) · ${escapeHtml(formatLabel)}</div>
+          <div style="font-weight:600;">${escapeHtml(g.facilityId)}${g.stationName ? ` <span style="font-weight:400;color:var(--muted);">· ${escapeHtml(g.stationName)}</span>` : ""}</div>
+          <div class="meta">${g.rows.length} row(s) · ${escapeHtml(formatLabel)}${g.stationName ? " · this station only" : ""}</div>
         </div>
-        <button class="btn btn-primary" data-facility="${escapeHtml(g.facilityId)}">Download</button>`;
+        <button class="btn btn-primary">Download</button>`;
       row.querySelector("button").addEventListener("click", () => downloadExportFacility(conn, exportKind, g));
       list.appendChild(row);
     });
   }
 
   function downloadExportFacility(conn, exportKind, group) {
-    Audit.log("Export downloaded", conn.companyName, `${group.facilityId} · ${exportKind.resolution === "Hourly" ? `Template ${exportKind.template}` : "Monthly"} · ${group.rows.length} row(s)`);
-    const safeFacility = group.facilityId.replace(/[^a-z0-9_-]+/gi, "_");
+    Audit.log("Export downloaded", conn.companyName, `${groupLabel(group)} · ${exportKind.resolution === "Hourly" ? `Template ${exportKind.template}` : "Monthly"} · ${group.rows.length} row(s)`);
+    const safeFacility = (group.stationName ? `${group.facilityId}_${group.stationName}` : group.facilityId).replace(/[^a-z0-9_-]+/gi, "_");
     const ws = XLSX.utils.aoa_to_sheet([group.headers, ...group.rows]);
     const wb = XLSX.utils.book_new();
     if (exportKind.resolution === "Hourly") {
@@ -1319,8 +1425,8 @@ const App = (() => {
     const id = qs("extCompany").value;
     const stationBox = qs("extStations");
     stationBox.innerHTML = "";
-    if (!id) return;
-    const conn = connections.find(c => c.id === id);
+    const conn = id ? connections.find(c => c.id === id) : null;
+    renderGroupingPicker("extGroupingWrap", conn);
     if (!conn) return;
     (conn.stations || []).forEach(s => {
       const row = document.createElement("label");
@@ -1701,22 +1807,60 @@ const App = (() => {
     }
   }
 
-  // Always raw (Timestamp/Station/Resolution/kWh) — for Template 1/2, use
-  // the Export tab, which reads accumulated Readings for any date range
-  // rather than just this one job's in-memory rows.
+  // Raw readings for this one job (for Template 1/2, use the Export tab, which
+  // reads accumulated Readings for any date range rather than just this job's
+  // in-memory rows). Follows the AGG ID grouping picker on the Extraction tab
+  // for this company:
+  //   - "All" sheet: every row with its AGG ID; combined AGG IDs are summed per
+  //     timestamp into one row, split ones keep a row per station.
+  //   - then one sheet per group (per AGG ID, or per station when split).
   function downloadRowsAsExcel(job) {
-    Audit.log("Download raw extraction", job.connection.companyName, `${job.resolution} · ${job.startDate} → ${job.endDate} · ${job.rowsCollected.length} row(s)`);
-    const utcOffset = job.connection.templateSettings?.utcOffset ?? 8;
-    const rows = job.rowsCollected.map(r => ({
-      Timestamp: formatReadableTimestamp(r, job.brand, utcOffset),
-      Station: (job.connection.stations.find(s => s.id === r.stationId) || {}).name || r.stationId,
+    const conn = connections.find(c => c.id === job.connection.id) || job.connection; // latest AGG IDs
+    const settings = conn.templateSettings || {};
+    const utcOffset = settings.utcOffset ?? 8;
+    const grouping = getGrouping(conn.id);
+    const names = stationNameMap(conn);
+
+    const groups = new Map(); // group key -> { g, byTs: Map(ts -> { kwh, stations:Set }) }
+    for (const r of job.rowsCollected) {
+      const g = TemplateExport.groupFor(r.stationId, settings, grouping);
+      const ts = formatReadableTimestamp(r, job.brand, utcOffset);
+      if (!groups.has(g.key)) groups.set(g.key, { g, byTs: new Map() });
+      const byTs = groups.get(g.key).byTs;
+      if (!byTs.has(ts)) byTs.set(ts, { kwh: 0, stations: new Set() });
+      const cell = byTs.get(ts);
+      cell.kwh += Number(r.kwh) || 0;
+      cell.stations.add(names[r.stationId] || r.stationId);
+    }
+
+    const sorted = [...groups.values()].sort((a, b) => a.g.facilityId.localeCompare(b.g.facilityId)
+      || (names[a.g.stationId] || "").localeCompare(names[b.g.stationId] || ""));
+    const toRows = ({ g, byTs }) => [...byTs.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0]))).map(([ts, c]) => ({
+      Timestamp: ts,
+      "AGG ID": g.facilityId,
+      Station: g.stationId ? (names[g.stationId] || g.stationId)
+        : c.stations.size > 1 ? `${c.stations.size} stations combined` : [...c.stations][0],
       Resolution: job.resolution,
-      kWh: r.kwh,
+      kWh: Math.round(c.kwh * 1e3) / 1e3,
     }));
-    const ws = XLSX.utils.json_to_sheet(rows);
+
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, job.resolution);
-    XLSX.writeFile(wb, `${job.connection.companyName}_${job.resolution}_${job.startDate}_${job.endDate}_raw.xlsx`);
+    const used = new Set();
+    const sheetName = (base) => { // Excel: max 31 chars, no []:*?/\, unique
+      const clean = String(base).replace(/[\[\]:*?\/\\]/g, "_").slice(0, 31) || "Sheet";
+      let name = clean, n = 2;
+      while (used.has(name.toLowerCase())) { const suf = ` (${n++})`; name = clean.slice(0, 31 - suf.length) + suf; }
+      used.add(name.toLowerCase());
+      return name;
+    };
+    const allRows = sorted.flatMap(toRows);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(allRows), sheetName("All"));
+    for (const grp of sorted) {
+      const label = grp.g.stationId ? `${grp.g.facilityId} ${names[grp.g.stationId] || grp.g.stationId}` : grp.g.facilityId;
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(toRows(grp)), sheetName(label));
+    }
+    Audit.log("Download raw extraction", conn.companyName, `${job.resolution} · ${job.startDate} → ${job.endDate} · ${TemplateExport.describeGrouping(grouping)} · ${job.rowsCollected.length} row(s) → ${allRows.length} row(s) in ${sorted.length} group(s)`);
+    XLSX.writeFile(wb, `${conn.companyName}_${job.resolution}_${job.startDate}_${job.endDate}_raw.xlsx`);
   }
 
   /* ---------------------------- settings password lock ---------------------------- */

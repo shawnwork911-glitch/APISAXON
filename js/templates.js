@@ -81,14 +81,47 @@ const TemplateExport = (() => {
   }
 
   /**
+   * GROUPING — which stations under one facility_id (AGG ID) get combined.
+   * grouping: { mode: "combined" | "separate" | "custom", split: [facilityId, …] }
+   *   combined  every station sharing an AGG ID is summed together (default, old behaviour)
+   *   separate  every station is kept on its own
+   *   custom    AGG IDs listed in `split` are kept per station, the rest combined
+   * Returns { key, facilityId, stationId } — stationId is null when combined.
+   * A station with no AGG ID assigned is already its own group either way.
+   */
+  function groupFor(stationId, settings, grouping) {
+    const facilityId = facilityKeyFor(stationId, settings);
+    if (facilityId === stationId) return { key: facilityId, facilityId, stationId: null };
+    if (!isSplit(facilityId, grouping)) return { key: facilityId, facilityId, stationId: null };
+    return { key: `${facilityId}\u0001${stationId}`, facilityId, stationId };
+  }
+  function isSplit(facilityId, grouping) {
+    const mode = grouping?.mode || "combined";
+    return mode === "separate" || (mode === "custom" && (grouping.split || []).includes(facilityId));
+  }
+  function describeGrouping(grouping) {
+    const mode = grouping?.mode || "combined";
+    if (mode === "separate") return "AGG IDs split per station";
+    if (mode === "custom") {
+      const split = grouping.split || [];
+      return split.length ? `split per station: ${split.join(", ")} · others combined` : "all AGG IDs combined";
+    }
+    return "AGG IDs combined";
+  }
+
+  /**
    * rows: [{ timestamp, stationId, kwh, raw }] — as produced by brands.js fetchSeries,
    * possibly spanning several stations in one extraction job.
    * brandKey: which brand these rows came from (affects timestamp parsing).
    * settings: from defaultSettings(), edited by the user — see facility grouping above.
-   * Returns an array of { facilityId, headers, rows }, one per distinct facility,
-   * each internally summed to one row per hour and sorted earliest → latest.
+   * grouping: see groupFor() — omitted means combined per AGG ID.
+   * stationNames: optional { stationId: name } for labelling split groups.
+   * Returns an array of { key, facilityId, stationId, stationName, headers, rows },
+   * one per group, each internally summed to one row per hour and sorted
+   * earliest → latest. The facility_id / meter_id columns always carry the
+   * AGG ID, even when a facility is split per station.
    */
-  function build(rows, brandKey, settings) {
+  function build(rows, brandKey, settings, grouping, stationNames = {}) {
     const headers = headersFor(settings.template);
     // facilityId -> localTrickEpoch(hour) -> accumulated kwh
     const buckets = new Map();
@@ -98,15 +131,16 @@ const TemplateExport = (() => {
       if (!wc) continue; // unparseable timestamp — skipped rather than guessed
       const hourWc = { ...wc, Mi: 0, S: 0 }; // group by the hour, in case of any sub-hour timestamps
       const localTrick = wcToTrickEpoch(hourWc);
-      const facilityId = facilityKeyFor(row.stationId, settings);
+      const g = groupFor(row.stationId, settings, grouping);
 
-      if (!buckets.has(facilityId)) buckets.set(facilityId, new Map());
-      const hourMap = buckets.get(facilityId);
+      if (!buckets.has(g.key)) buckets.set(g.key, { g, hours: new Map() });
+      const hourMap = buckets.get(g.key).hours;
       hourMap.set(localTrick, (hourMap.get(localTrick) || 0) + (row.kwh || 0));
     }
 
     const groups = [];
-    for (const [facilityId, hourMap] of buckets.entries()) {
+    for (const { g, hours: hourMap } of buckets.values()) {
+      const facilityId = g.facilityId;
       const groupSettings = (settings.facilityGroups || {})[facilityId] || {};
       const entries = [...hourMap.entries()].sort((a, b) => a[0] - b[0]);
       const outRows = entries.map(([localTrick, kwhSum]) => {
@@ -122,13 +156,14 @@ const TemplateExport = (() => {
         return [fmtISOWithOffset(wc, settings.utcOffset), settings.tzLabel, fmtISOZ(utcWc), value,
                 settings.unitOM, groupSettings.meterId || facilityId, facilityId, groupSettings.eacRegistryId || "tigr"];
       });
-      groups.push({ facilityId, headers, rows: outRows });
+      groups.push({ key: g.key, facilityId, stationId: g.stationId,
+        stationName: g.stationId ? (stationNames[g.stationId] || g.stationId) : "", headers, rows: outRows });
     }
-    groups.sort((a, b) => a.facilityId.localeCompare(b.facilityId));
+    groups.sort((a, b) => a.facilityId.localeCompare(b.facilityId) || a.stationName.localeCompare(b.stationName));
     return groups;
   }
 
-  return { headersFor, defaultSettings, facilityKeyFor, build, wallClockFromRow };
+  return { headersFor, defaultSettings, facilityKeyFor, groupFor, isSplit, describeGrouping, build, wallClockFromRow };
 })();
 
 if (typeof module !== "undefined") module.exports = TemplateExport;
