@@ -1,10 +1,10 @@
 name: Daily inverter data extraction
 
 on:
-  schedule:
+#  schedule:
     # Runs at 01:00 UTC every day — adjust to suit your timezone / quota pacing.
-    - cron: "0 1 * * *"
-  workflow_dispatch: {} # lets you trigger a run manually from the Actions tab
+  #  - cron: "0 1 * * *"
+ # workflow_dispatch: {} # lets you trigger a run manually from the Actions tab
 
 jobs:
   extract:
