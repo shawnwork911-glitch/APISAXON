@@ -147,6 +147,7 @@ tbody tr:last-child td{border-bottom:none;}
 .settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
 @media (max-width:820px){.settings-grid, .extraction-grid, .brand-grid, .stations-modal-grid{grid-template-columns:1fr;}}
 .stations-modal-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start;}
+.stations-modal-grid[hidden]{display:none;}
 
 .banner{display:flex;gap:10px;align-items:center;background:#241c14;border:1px solid #3a2c16;border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:.85rem;color:#e5c98a;}
 .banner.banner-error{background:#2a1414;border-color:#4a1e1e;color:#f0a5a5;}
@@ -491,7 +492,11 @@ tbody tr:last-child td{border-bottom:none;}
       facility_id ties stations together for Template 1/2 exports — stations sharing one are summed per hour into a single output. meter_id / eac_registry_id are used only for Template 2 and can be left blank to default to the facility_id.
     </div>
     <div id="stationsModalMissingWarning" hidden class="callout warn" style="margin-bottom:8px;"></div>
-    <div class="stations-modal-grid">
+    <div class="stations-summary" style="display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--line);border-radius:10px;padding:10px 14px;background:var(--panel2);">
+      <span id="stationsModalSummary" style="font-size:.86rem;color:var(--muted);"></span>
+      <button type="button" class="btn" id="btnToggleStationIds" aria-expanded="false">✎ Edit station IDs</button>
+    </div>
+    <div class="stations-modal-grid" id="stationsModalEditor" hidden style="margin-top:12px;">
       <div>
         <label style="display:block;font-size:.74rem;color:var(--muted);letter-spacing:.03em;margin-bottom:6px;">STATIONS</label>
         <div class="table-scroll" style="max-height:400px;">

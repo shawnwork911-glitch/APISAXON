@@ -143,13 +143,14 @@ const App = (() => {
     qs("btnModalClose").addEventListener("click", closeAddCompanyModal);
     qs("btnStationsModalClose").addEventListener("click", closeStationsModal);
     qs("btnStationsModalDone").addEventListener("click", closeStationsModal);
+    qs("btnToggleStationIds").addEventListener("click", () => setStationEditorOpen(qs("stationsModalEditor").hidden));
     qs("stationsModalOverlay").addEventListener("click", (e) => { if (e.target.id === "stationsModalOverlay") closeStationsModal(); });
     qs("stationsModalTable").addEventListener("input", (e) => {
       if (!e.target.classList.contains("modalStationFacilityInput")) return;
       stationsModalState.stationFacility[e.target.dataset.station] = e.target.value;
       renderStationsModalFacilityTable();
       const conn = connections.find(c => c.id === stationsModalConnId);
-      if (conn) renderMissingFacilityWarning(conn);
+      if (conn) { renderMissingFacilityWarning(conn); renderStationsSummary(conn); }
     });
     qs("stationsModalTable").addEventListener("change", saveStationsModalSettings);
     qs("stationsModalFacilityTable").addEventListener("change", (e) => {
@@ -333,9 +334,28 @@ const App = (() => {
     renderStationsModalTable(conn);
     renderStationsModalFacilityTable();
     renderMissingFacilityWarning(conn);
+    renderStationsSummary(conn);
+    setStationEditorOpen(false); // station / facility tables stay hidden until the user asks to edit
     qs("stationsModalSavedNote").textContent = "";
     qs("stationsModalOverlay").classList.add("active");
     loadDataStoredSummary(conn);
+  }
+
+  function setStationEditorOpen(open) {
+    qs("stationsModalEditor").hidden = !open;
+    const btn = qs("btnToggleStationIds");
+    btn.textContent = open ? "▴ Hide station IDs" : "✎ Edit station IDs";
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  function renderStationsSummary(conn) {
+    const stations = conn.stations || [];
+    const fmap = stationsModalState?.stationFacility || {};
+    const distinct = new Set(stations.map(s => (fmap[s.id] || "").trim()).filter(Boolean));
+    qs("stationsModalSummary").textContent = stations.length
+      ? `${stations.length} station(s) · ${distinct.size} facility_id(s) assigned`
+      : "No stations cached yet";
+    qs("btnToggleStationIds").disabled = !stations.length;
   }
 
   async function loadDataStoredSummary(conn) {
