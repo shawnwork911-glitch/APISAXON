@@ -226,10 +226,6 @@ const App = (() => {
     banner.style.display = configured ? "none" : "flex";
     banner.classList.remove("banner-error");
     banner.textContent = "Set your Proxy base URL and Google Sheet ID under Settings to load and save company connections.";
-    const sheetLink = qs("sheetLink");
-    const url = SheetsClient.sheetUrl();
-    if (sheetLink) sheetLink.href = url || "#";
-    if (sheetLink) sheetLink.style.display = url ? "inline" : "none";
   }
 
   async function handleSaveSettings() {
