@@ -1830,9 +1830,12 @@ const App = (() => {
         }
         const jobRow = document.createElement("div");
         jobRow.className = "job-row";
+        const prog = rangeProgress(resolution, pending.startDate, pending.endDate, cursor);
         jobRow.innerHTML = `<div class="job-title">${escapeHtml(conn.companyName)} · ${resolution} · ${pending.startDate} → ${pending.endDate}</div>
-          <div class="job-bar"><div class="job-bar-fill"></div></div>
-          <div class="job-status">Unfinished from a previous session — ${cursor && cursor >= pending.startDate ? `fetched up to ${escapeHtml(cursor)}, ` : ""}resumes from ${escapeHtml(effectiveStart)}.</div>`;
+          <div class="job-bar"><div class="job-bar-fill" style="width:${prog.pct}%"></div></div>
+          <div class="job-status">${prog.hasData
+            ? `<strong>Extracted up to ${escapeHtml(cursor)}</strong> · ${prog.done} of ${prog.total} ${prog.unit}(s) (${prog.pct}%) · paused — resumes from ${escapeHtml(effectiveStart)}.`
+            : `Nothing extracted yet for this range — will start from ${escapeHtml(effectiveStart)}.`}</div>`;
         const resumeThis = () => {
           const idx = pendingResumeActions.indexOf(resumeThis);
           if (idx !== -1) pendingResumeActions.splice(idx, 1);
@@ -1883,11 +1886,32 @@ const App = (() => {
     qs("btnResumeAll").hidden = true;
   }
 
+  // Progress of a date range, measured by the cursor (the last day / month
+  // already fetched) — so it can be rebuilt from the saved connection after a
+  // refresh. Monthly counts months; Hourly / Daily count days.
+  function rangeProgress(resolution, startDate, endDate, cursor) {
+    const monthly = resolution === "Monthly";
+    const idx = (iso) => {
+      const [y, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+      return monthly ? y * 12 + (m - 1) : Math.round(Date.UTC(y, m - 1, d) / 86400000);
+    };
+    const total = Math.max(1, idx(endDate) - idx(startDate) + 1);
+    const hasData = !!cursor && cursor >= startDate;
+    const done = hasData ? Math.min(total, Math.max(0, idx(cursor) - idx(startDate) + 1)) : 0;
+    return { total, done, hasData, unit: monthly ? "month" : "day", pct: Math.round((done / total) * 100) };
+  }
+
   function renderJobProgress(jobRow, job, startDate, endDate) {
-    const total = Math.max(1, (new Date(endDate) - new Date(startDate)) / 86400000 + 1);
-    const pct = Math.min(100, Math.round((job.callsMadeToday / total) * 100));
+    const cursor = job.connection?.cursor?.[job.resolution];
+    const prog = rangeProgress(job.resolution, startDate, endDate, cursor);
+    let pct = prog.pct;
+    if (!prog.hasData) { // no cursor yet — fall back to the call count
+      const total = Math.max(1, (new Date(endDate) - new Date(startDate)) / 86400000 + 1);
+      pct = Math.min(100, Math.round((job.callsMadeToday / total) * 100));
+    }
     jobRow.querySelector(".job-bar-fill").style.width = `${pct}%`;
     let statusText = `${job.rowsCollected.length} rows · ${job.status}`;
+    if (prog.hasData) statusText += ` · extracted up to ${cursor} (${prog.done} of ${prog.total} ${prog.unit}s)`;
     if (job.status === "paused" && job.pausedReason === "quota") statusText += " (daily quota reached — resumes tomorrow / next run)";
     if (job.status === "stopped") statusText = `${job.rowsCollected.length} rows · Cancelled`;
     if (job.status === "error") statusText = `Error: ${job.error}`;
