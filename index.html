@@ -493,8 +493,12 @@ tbody tr:last-child td{border-bottom:none;}
     <div id="stationsModalMissingWarning" hidden class="callout warn" style="margin-bottom:8px;"></div>
     <div class="stations-summary" style="display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--line);border-radius:10px;padding:10px 14px;background:var(--panel2);">
       <span id="stationsModalSummary" style="font-size:.86rem;color:var(--muted);"></span>
-      <button type="button" class="btn" id="btnToggleStationIds" aria-expanded="false">✎ Edit station IDs</button>
+      <span style="display:flex;gap:8px;">
+        <button type="button" class="btn" id="btnResyncStations" title="Re-fetch the station list from the brand and compare it with what is saved">⟳ Resync stations</button>
+        <button type="button" class="btn" id="btnToggleStationIds" aria-expanded="false">✎ Edit station IDs</button>
+      </span>
     </div>
+    <div id="stationsResyncResult" hidden style="margin-top:10px;"></div>
     <div class="stations-modal-grid" id="stationsModalEditor" hidden style="margin-top:12px;">
       <div>
         <label style="display:block;font-size:.74rem;color:var(--muted);letter-spacing:.03em;margin-bottom:6px;">STATIONS</label>
