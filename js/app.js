@@ -438,18 +438,21 @@ const App = (() => {
     const now = new Date();
     const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
     const suspect = monthsOfSummary(summary?.Monthly).filter(m => m >= thisMonth);
-    if (!suspect.length) { box.innerHTML = ""; return; }
+    // Hourly rows for the current (or a later) month are reported too, even when no Monthly row exists yet.
+    const hourlyNow = monthsOfSummary(summary?.Hourly).filter(m => m >= thisMonth);
+    const focus = [...new Set([...suspect, ...hourlyNow])].sort();
+    if (!focus.length) { box.innerHTML = ""; return; }
     const [ty, tm] = thisMonth.split("-").map(Number);
     const prevMonth = tm === 1 ? `${ty - 1}-12` : `${ty}-${String(tm - 1).padStart(2, "0")}`;
-    const last = suspect[suspect.length - 1];
+    const last = focus[focus.length - 1];
     const label = monthYearLabel;
-    box.innerHTML = `<div class="field-help" style="margin-top:10px;">Checking the ${escapeHtml(suspect.map(label).join(", "))} Monthly row(s)…</div>`;
+    box.innerHTML = `<div class="field-help" style="margin-top:10px;">Checking the ${escapeHtml(focus.map(label).join(", "))} data…</div>`;
 
     let rows;
     try {
       rows = dedupeReadings(await SheetsClient.listReadings(conn.companyName, { fromDate: `${prevMonth}-01`, toDate: monthEnd(`${last}-01`) }));
     } catch (e) {
-      box.innerHTML = `<div class="field-help" style="margin-top:10px;color:var(--warn);">Couldn't check the ${escapeHtml(suspect.map(label).join(", "))} Monthly row(s): ${escapeHtml(e.message)}</div>`;
+      box.innerHTML = `<div class="field-help" style="margin-top:10px;color:var(--warn);">Couldn't check the ${escapeHtml(focus.map(label).join(", "))} data: ${escapeHtml(e.message)}</div>`;
       return;
     }
     const monthOf = (r) => (extractDateOnly(r.timestamp) || "").slice(0, 7);
@@ -497,15 +500,19 @@ const App = (() => {
           kind = "ok"; verdict = `Real month-to-date figure: 1–${daysCovered} ${label(m)}${fetched ? `, fetched ${fetched}` : ""}${h.days ? `, and it matches the hourly data` : ""}. Not a full month — extract ${label(m)} again after it ends to replace it.`;
         }
       }
-      checks.push({ m, name, kwh, fetched, verdict, kind });
+      checks.push({ m, sid: r.stationId, name, kwh, fetched, verdict, kind });
     }
-    if (!checks.length) { box.innerHTML = ""; return; }
     const color = { bad: "var(--err)", warn: "var(--warn)", info: "var(--muted)", ok: "var(--ok)" };
     const icon = { bad: "✕", warn: "⚠", info: "○", ok: "✓" };
     const bad = checks.filter(c => c.kind === "bad").length;
-    box.innerHTML = `
-      <div class="callout${bad ? " warn" : ""}" style="margin:12px 0 8px;">
-        <strong>Check of unfinished month(s): ${escapeHtml(suspect.map(label).join(", "))}</strong>
+    const heading = (t) => `<div style="margin:14px 0 6px;font-weight:600;">${t}</div>`;
+
+    /* ---- Monthly section ---- */
+    const monthlyHtml = !checks.length
+      ? `<div class="field-help">No Monthly row for a month that isn't over.</div>`
+      : `
+      <div class="callout${bad ? " warn" : ""}" style="margin:0 0 8px;">
+        <strong>Check of unfinished month(s): ${escapeHtml([...new Set(checks.map(c => c.m))].map(label).join(", "))}</strong>
         ${bad ? `${bad} of ${checks.length} Monthly row(s) don't hold up — see below. Compare will show them against the hourly data until they're re-extracted.`
               : `The ${checks.length} Monthly row(s) for a month that isn't over were checked against the rest of the data.`}
       </div>
@@ -515,6 +522,60 @@ const App = (() => {
           <td style="white-space:nowrap;">${escapeHtml(c.fetched || "unknown")}</td>
           <td style="color:${color[c.kind]};">${icon[c.kind]} ${escapeHtml(c.verdict)}</td></tr>`).join("")}
         </tbody></table></div>`;
+
+    /* ---- Hourly section: per station, what date range the hourly data actually covers ---- */
+    const dayLabel = (d) => `${Number(d.slice(8, 10))} ${monthYearLabel(d)}`;
+    const timeOf = (ts) => (String(ts).match(/[T ](\d{2}:\d{2})/) || [])[1] || "";
+    const hourlyBy = new Map();
+    const touch = (m, sid, name) => {
+      const k = `${m}|${sid}`;
+      if (!hourlyBy.has(k)) hourlyBy.set(k, { m, name, dates: new Set(), first: null, last: null, kwh: 0, n: 0 });
+      return hourlyBy.get(k);
+    };
+    for (const r of rows) {
+      if (res(r) !== "Hourly" || !focus.includes(monthOf(r))) continue;
+      const e = touch(monthOf(r), r.stationId, r.stationName || r.stationId);
+      const d = extractDateOnly(r.timestamp);
+      if (!d) continue;
+      e.dates.add(d); e.n++; e.kwh += Number(r.kwh) || 0;
+      const ts = String(r.timestamp);
+      if (!e.first || ts < e.first) e.first = ts;
+      if (!e.last || ts > e.last) e.last = ts;
+    }
+    for (const c of checks) touch(c.m, c.sid, c.name); // stations with a Monthly row but no hourly rows still get listed
+    const missingDays = (e) => {
+      const ds = [...e.dates].sort();
+      if (!ds.length) return [];
+      const out = [];
+      for (let d = Number(ds[0].slice(8, 10)); d <= Number(ds[ds.length - 1].slice(8, 10)); d++) {
+        if (!e.dates.has(`${e.m}-${String(d).padStart(2, "0")}`)) out.push(d);
+      }
+      return out;
+    };
+    const hRows = [...hourlyBy.values()].sort((a, b) => a.m.localeCompare(b.m) || String(a.name).localeCompare(String(b.name)));
+    const hs = summary?.Hourly;
+    const overall = hs
+      ? `Hourly data stored for this company overall: ${escapeHtml(hs.earliest || "?")} → ${escapeHtml(hs.latest || "?")} (${hs.rows} row(s)).`
+      : `No Hourly data stored for this company.`;
+    const hourlyHtml = `
+      <div class="field-help" style="margin-bottom:6px;">${overall} Below: what each station has for the unfinished month(s).</div>
+      ${hRows.length ? `<div class="table-scroll" style="max-height:200px;"><table>
+        <thead><tr><th>Month</th><th>Station</th><th>From</th><th>To</th><th>Days</th><th>Missing days</th><th>kWh</th></tr></thead><tbody>
+        ${hRows.map(e => {
+          if (!e.dates.size) return `<tr><td style="white-space:nowrap;">${escapeHtml(label(e.m))}</td><td>${escapeHtml(e.name)}</td><td colspan="5" style="color:var(--muted);">No hourly data for this month</td></tr>`;
+          const miss = missingDays(e);
+          const f = [...e.dates].sort()[0], l = [...e.dates].sort().pop();
+          const missTxt = !miss.length ? "none" : miss.length <= 6 ? miss.join(", ") : `${miss.slice(0, 6).join(", ")} … (+${miss.length - 6})`;
+          return `<tr><td style="white-space:nowrap;">${escapeHtml(label(e.m))}</td><td>${escapeHtml(e.name)}</td>
+            <td style="white-space:nowrap;">${escapeHtml(dayLabel(f))}</td>
+            <td style="white-space:nowrap;">${escapeHtml(dayLabel(l))}${timeOf(e.last) ? ` <span class="field-help" style="display:inline;">(last ${escapeHtml(timeOf(e.last))})</span>` : ""}</td>
+            <td>${e.dates.size}</td>
+            <td style="color:${miss.length ? "var(--warn)" : "var(--ok)"};">${escapeHtml(missTxt)}</td>
+            <td>${fmt(e.kwh)}</td></tr>`;
+        }).join("")}
+        </tbody></table></div>` : `<div class="field-help">No hourly rows for the unfinished month(s).</div>`}`;
+
+    box.innerHTML = heading("Monthly data") + monthlyHtml + heading("Hourly data") + hourlyHtml;
   }
 
   // "2026-09" or "2026-09-01" -> "Sep 2026" (built from the text itself, no timezone shifts).
