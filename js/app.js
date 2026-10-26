@@ -145,6 +145,9 @@ const App = (() => {
     qs("btnStationsModalDone").addEventListener("click", closeStationsModal);
     qs("btnToggleStationIds").addEventListener("click", () => setStationEditorOpen(qs("stationsModalEditor").hidden));
     qs("btnResyncStations").addEventListener("click", resyncStations);
+    const setAllExtStations = (on) => qs("extStations").querySelectorAll("input[type=checkbox]").forEach(i => { i.checked = on; });
+    qs("btnExtSelectAll").addEventListener("click", () => setAllExtStations(true));
+    qs("btnExtClearAll").addEventListener("click", () => setAllExtStations(false));
     qs("stationsResyncResult").addEventListener("click", (e) => {
       if (e.target.id === "btnApplyResync") applyResync();
       if (e.target.id === "btnCancelResync") { resyncPending = null; qs("stationsResyncResult").hidden = true; }
