@@ -144,6 +144,11 @@ const App = (() => {
     qs("btnStationsModalClose").addEventListener("click", closeStationsModal);
     qs("btnStationsModalDone").addEventListener("click", closeStationsModal);
     qs("btnToggleStationIds").addEventListener("click", () => setStationEditorOpen(qs("stationsModalEditor").hidden));
+    qs("btnResyncStations").addEventListener("click", resyncStations);
+    qs("stationsResyncResult").addEventListener("click", (e) => {
+      if (e.target.id === "btnApplyResync") applyResync();
+      if (e.target.id === "btnCancelResync") { resyncPending = null; qs("stationsResyncResult").hidden = true; }
+    });
     qs("stationsModalOverlay").addEventListener("click", (e) => { if (e.target.id === "stationsModalOverlay") closeStationsModal(); });
     qs("stationsModalTable").addEventListener("input", (e) => {
       if (!e.target.classList.contains("modalStationFacilityInput")) return;
@@ -333,6 +338,8 @@ const App = (() => {
     renderStationsSummary(conn);
     setStationEditorOpen(false); // station / facility tables stay hidden until the user asks to edit
     qs("stationsModalSavedNote").textContent = "";
+    resyncPending = null; qs("stationsResyncResult").hidden = true; qs("stationsResyncResult").innerHTML = "";
+    qs("btnResyncStations").hidden = !!brand.manual || typeof brand.listStations !== "function";
     qs("stationsModalOverlay").classList.add("active");
     loadDataStoredSummary(conn);
   }
@@ -578,7 +585,7 @@ const App = (() => {
     wrap.innerHTML = `<thead><tr><th>Station</th><th>facility_id</th></tr></thead><tbody>` +
       stations.map(s => `
         <tr>
-          <td>${escapeHtml(s.name)}<div class="station-list-code">${escapeHtml(s.id)}</div></td>
+          <td>${escapeHtml(s.name)}${s.notInApi ? ' <span class="pill warn" title="Not returned by the brand\'s API at the last resync. Kept so its stored data and IDs stay valid.">not in API</span>' : ""}<div class="station-list-code">${escapeHtml(s.id)}</div></td>
           <td><input type="text" class="modalStationFacilityInput" data-station="${escapeHtml(s.id)}"
                      value="${escapeHtml(stationsModalState.stationFacility[s.id] || "")}"
                      placeholder="${escapeHtml(s.id)}"></td>
@@ -629,6 +636,89 @@ const App = (() => {
       qs("stationsModalSavedNote").textContent = `Could not save: ${e.message}`;
       qs("stationsModalSavedNote").style.color = "var(--err)";
     }
+  }
+
+  /* ---------------------- resync stations (non-destructive) ----------------------
+     Re-fetches the station list from the brand and diffs it against conn.stations,
+     matching on the brand's own station id (s.id). Existing stations are never
+     renamed, re-keyed or removed, so facility_id / meter_id / eac_registry_id
+     mappings and stored Readings rows keep pointing at the same ids.
+       - New in API     -> appended (blank facility_id until you set one)
+       - Gone from API  -> kept, flagged notInApi (cleared again if it reappears)
+       - Name changed   -> reported only, saved name is left alone                   */
+  let resyncPending = null;
+
+  async function resyncStations() {
+    const conn = connections.find(c => c.id === stationsModalConnId);
+    if (!conn) return;
+    const brand = BRANDS[conn.brand];
+    const btn = qs("btnResyncStations"), box = qs("stationsResyncResult");
+    btn.disabled = true; btn.textContent = "Checking…";
+    resyncPending = null;
+    try {
+      const auth = await brand.buildAuth(conn.credentials, ProxyClient.call);
+      const fresh = await brand.listStations({ call: ProxyClient.call, auth });
+      const saved = conn.stations || [];
+      const savedById = new Map(saved.map(s => [String(s.id), s]));
+      const freshById = new Map(fresh.map(s => [String(s.id), s]));
+      const added = fresh.filter(s => !savedById.has(String(s.id)));
+      const gone = saved.filter(s => !freshById.has(String(s.id)) && !s.notInApi);
+      const back = saved.filter(s => freshById.has(String(s.id)) && s.notInApi);
+      const renamed = saved.filter(s => freshById.has(String(s.id)) && freshById.get(String(s.id)).name !== s.name)
+        .map(s => ({ id: s.id, from: s.name, to: freshById.get(String(s.id)).name }));
+      // An empty reply from the API is more likely a glitch than "every station was removed".
+      const suspicious = !fresh.length && saved.length > 0;
+      resyncPending = { connId: conn.id, added, gone: suspicious ? [] : gone, back, renamed, total: fresh.length };
+
+      const list = (arr, fmt) => `<ul style="margin:4px 0 8px 18px;">${arr.map(x => `<li>${fmt(x)}</li>`).join("")}</ul>`;
+      const nm = s => `${escapeHtml(s.name)} <span class="station-list-code" style="display:inline;">${escapeHtml(s.id)}</span>`;
+      let html = `<div class="callout ${added.length || gone.length ? "warn" : ""}"><strong>API returned ${fresh.length} station(s); ${saved.length} saved.</strong>`;
+      if (suspicious) html += `<div>The API returned no stations at all — not flagging anything as missing. Check the credentials and try again.</div>`;
+      if (added.length) html += `<div style="margin-top:6px;">New in API (${added.length}) — will be added:</div>${list(added, nm)}`;
+      if (gone.length && !suspicious) html += `<div style="margin-top:6px;">Saved but not in API (${gone.length}) — will be kept and flagged, not deleted:</div>${list(gone, nm)}`;
+      if (back.length) html += `<div style="margin-top:6px;">Back in API (${back.length}) — flag will be cleared:</div>${list(back, nm)}`;
+      if (renamed.length) html += `<div style="margin-top:6px;">Name differs in API (${renamed.length}) — saved name left unchanged:</div>${list(renamed, r => `${escapeHtml(r.from)} → ${escapeHtml(r.to)} <span class="station-list-code" style="display:inline;">${escapeHtml(r.id)}</span>`)}`;
+      const changes = added.length + (suspicious ? 0 : gone.length) + back.length;
+      if (!changes) html += `<div style="margin-top:6px;">No extra or missing stations. Nothing to change.</div>`;
+      html += `</div>`;
+      if (changes) html += `<div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-primary" id="btnApplyResync">Apply changes</button><button class="btn" id="btnCancelResync">Cancel</button></div>`;
+      box.innerHTML = html; box.hidden = false;
+    } catch (e) {
+      box.innerHTML = `<div class="callout warn">Resync failed: ${escapeHtml(e.message)}</div>`; box.hidden = false;
+    } finally {
+      btn.disabled = false; btn.textContent = "⟳ Resync stations";
+    }
+  }
+
+  async function applyResync() {
+    const r = resyncPending;
+    const conn = r && connections.find(c => c.id === r.connId);
+    if (!conn) return;
+    const btn = qs("btnApplyResync"); btn.disabled = true; btn.textContent = "Saving…";
+    const before = JSON.parse(JSON.stringify(conn.stations || []));
+    const goneIds = new Set(r.gone.map(s => String(s.id)));
+    const backIds = new Set(r.back.map(s => String(s.id)));
+    conn.stations = before.map(s => {
+      if (goneIds.has(String(s.id))) return { ...s, notInApi: true };
+      if (backIds.has(String(s.id))) { const { notInApi, ...rest } = s; return rest; }
+      return s;
+    }).concat(r.added);
+    try {
+      await SheetsClient.saveConnection(conn);
+    } catch (e) {
+      conn.stations = before; // roll back the in-memory copy
+      alert(`Could not save: ${e.message}`);
+      btn.disabled = false; btn.textContent = "Apply changes";
+      return;
+    }
+    Audit.log("Resync stations", conn.companyName,
+      `Added ${r.added.length}${r.added.length ? " (" + r.added.map(s => s.id).join(", ") + ")" : ""} · flagged not-in-API ${r.gone.length}${r.gone.length ? " (" + r.gone.map(s => s.id).join(", ") + ")" : ""} · restored ${r.back.length}`);
+    resyncPending = null;
+    qs("stationsResyncResult").innerHTML = `<div class="callout">Resync saved. Existing station IDs were not changed.</div>`;
+    stationsModalDirty = false;
+    renderStationsModalTable(conn); renderStationsModalFacilityTable();
+    renderMissingFacilityWarning(conn); renderStationsSummary(conn);
+    if (currentView === "dashboard") renderDashboard();
   }
 
   function closeStationsModal() {
@@ -1507,7 +1597,7 @@ const App = (() => {
     (conn.stations || []).forEach(s => {
       const row = document.createElement("label");
       row.className = "station-row";
-      row.innerHTML = `<input type="checkbox" value="${s.id}" checked> ${escapeHtml(s.name)}`;
+      row.innerHTML = `<input type="checkbox" value="${s.id}" ${s.notInApi ? "" : "checked"}> ${escapeHtml(s.name)}${s.notInApi ? " <span class=\"field-help\">(not in API at last resync)</span>" : ""}`;
       stationBox.appendChild(row);
     });
     if (!conn.stations?.length) {
