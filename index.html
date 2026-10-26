@@ -269,7 +269,13 @@ tbody tr:last-child td{border-bottom:none;}
             <select id="extCompany"><option value="">Select a company…</option></select>
           </div>
           <div class="field">
-            <label>Stations</label>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <label style="margin:0;">Stations</label>
+              <span style="display:flex;gap:6px;">
+                <button type="button" class="btn btn-ghost" id="btnExtSelectAll">Select all</button>
+                <button type="button" class="btn btn-ghost" id="btnExtClearAll">Clear all</button>
+              </span>
+            </div>
             <div class="station-box" id="extStations"></div>
           </div>
           <div class="field">
