@@ -1574,7 +1574,7 @@ const App = (() => {
           const localDate = `${wc.y}-${String(wc.mo).padStart(2, "0")}-${String(wc.d).padStart(2, "0")}`;
           return localDate >= startDate && localDate <= endDate;
         });
-        const groups = buildDailyExportGroups(filtered, brandKey, settingsForFacility, grouping, stationNameMap(conn), startDate, endDate);
+        const groups = buildDailyExportGroups(filtered, brandKey, settingsForFacility, grouping, stationNameMap(conn), startDate, endDate, conn.companyName);
         renderExportResults(conn, { resolution, template: null }, groups, filtered.length, "Daily");
         Audit.log("Export built", conn.companyName, `Daily · ${startDate} → ${endDate} · ${groupingDesc} · ${filtered.length} row(s) · ${groups.length} file(s)`);
         qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.` + (filtered.length ? "" : exportDiagnostic(readings, resolution, brandKey, utcOffset, startDate, endDate));
@@ -1635,8 +1635,8 @@ const App = (() => {
   // Days with no stored reading are left blank so every month lists all its days
   // (clamped to the chosen start / end date).
   const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  function buildDailyExportGroups(readings, brandKey, settings, grouping, stationNames = {}, startDate, endDate) {
-    const headers = ["Date", "PV Yield"];
+  function buildDailyExportGroups(readings, brandKey, settings, grouping, stationNames = {}, startDate, endDate, companyName = "") {
+    const headers = ["Date", "PV Yield", "Company", "Device ID"];
     const byGroup = new Map(); // group key -> { g, days: Map("YYYY-MM-DD" -> kWh), members }
     for (const r of readings) {
       const wc = TemplateExport.wallClockFromRow(r, brandKey, settings.utcOffset ?? 8);
@@ -1679,7 +1679,7 @@ const App = (() => {
             rows.push([serial, null]);
           }
         }
-        sheets.push({ name: `${MONTH_ABBR[m - 1]} ${y}`, headers, rows, total: Math.round(total * 1e6) / 1e6 });
+        sheets.push({ name: `${MONTH_ABBR[m - 1]} ${y}`, headers, rows, company: companyName, deviceId: g.facilityId, total: Math.round(total * 1e6) / 1e6 });
       }
       groups.push({ key: g.key, facilityId: g.facilityId, stationId: g.stationId, members: [...members].sort(),
         stationName: g.stationId ? (stationNames[g.stationId] || g.stationId) : "", headers, sheets, rows: Array.from({ length: dayRows }) });
@@ -1721,6 +1721,8 @@ const App = (() => {
         const ws = XLSX.utils.aoa_to_sheet([sh.headers]);
         sh.rows.forEach(([serial, v], i) => {
           const r = i + 1; // 0-based row index; header is row 0
+          ws[XLSX.utils.encode_cell({ r, c: 2 })] = { t: "s", v: String(sh.company ?? "") };
+          ws[XLSX.utils.encode_cell({ r, c: 3 })] = { t: "s", v: String(sh.deviceId ?? "") };
           ws[XLSX.utils.encode_cell({ r, c: 0 })] = { t: "n", v: serial, z: "dd/mm/yyyy" };
           if (v != null) ws[XLSX.utils.encode_cell({ r, c: 1 })] = { t: "n", v };
         });
@@ -1729,8 +1731,8 @@ const App = (() => {
         ws[XLSX.utils.encode_cell({ r: totalRow, c: 1 })] = sh.rows.length
           ? { t: "n", f: `SUM(B2:B${sh.rows.length + 1})`, v: sh.total }
           : { t: "n", v: 0 };
-        ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: totalRow, c: 1 } });
-        ws["!cols"] = [{ wch: 14 }, { wch: 14 }];
+        ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: totalRow, c: 3 } });
+        ws["!cols"] = [{ wch: 14 }, { wch: 14 }, { wch: 28 }, { wch: 16 }];
         XLSX.utils.book_append_sheet(wb, ws, sh.name);
       }
       XLSX.writeFile(wb, `${conn.companyName}_${safeFacility}_export_daily.xlsx`);
@@ -2171,11 +2173,14 @@ const App = (() => {
       const cancelBtn = jobRow.querySelector(".job-cancel");
       if (cancelBtn) cancelBtn.remove();
     }
-    if ((job.status === "done" || job.status === "paused" || job.status === "stopped") && job.rowsCollected.length && !jobRow.querySelector(".job-download")) {
+    // Download Excel is offered only once the job has fully finished — never for a
+    // paused (quota), cancelled or failed run, whose file would hold a partial range.
+    if (job.status !== "done") jobRow.querySelector(".job-download")?.remove();
+    if (job.status === "done" && job.rowsCollected.length && !jobRow.querySelector(".job-download")) {
       const dl = document.createElement("button");
       dl.className = "btn btn-ghost job-download";
       dl.textContent = "Download Excel";
-      dl.addEventListener("click", () => downloadRowsAsExcel(job));
+      dl.addEventListener("click", () => { if (job.status === "done") downloadRowsAsExcel(job); });
       jobRow.appendChild(dl);
     }
   }
