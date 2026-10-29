@@ -1471,12 +1471,14 @@ const App = (() => {
   }
 
   function syncExportFieldVisibility() {
-    const isHourly = qs("expResolution").value === "Hourly";
+    const res = qs("expResolution").value;
+    const isHourly = res === "Hourly", isDaily = res === "Daily", isMonthly = res === "Monthly";
     qs("expTemplateWrap").hidden = !isHourly;
-    qs("expMonthlyNote").hidden = isHourly;
-    // Monthly picks whole months from a list; Hourly keeps the day-level date pickers.
-    ["expStartDateField", "expEndDateField"].forEach(id => { qs(id).hidden = !isHourly; });
-    ["expStartMonthField", "expEndMonthField"].forEach(id => { qs(id).hidden = isHourly; });
+    qs("expDailyNote").hidden = !isDaily;
+    qs("expMonthlyNote").hidden = !isMonthly;
+    // Monthly picks whole months from a list; Hourly and Daily keep the day-level date pickers.
+    ["expStartDateField", "expEndDateField"].forEach(id => { qs(id).hidden = isMonthly; });
+    ["expStartMonthField", "expEndMonthField"].forEach(id => { qs(id).hidden = !isMonthly; });
   }
 
   // Monthly export: Start / End month lists hold only the months that actually
@@ -1562,6 +1564,20 @@ const App = (() => {
         renderExportResults(conn, { resolution, template: baseSettings.template }, groups, filtered.length, "Hourly");
         Audit.log("Export built", conn.companyName, `Hourly · Template ${baseSettings.template} · ${startDate} → ${endDate} · ${groupingDesc} · ${filtered.length} row(s) · ${groups.length} file(s)`);
         qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.` + (filtered.length ? "" : exportDiagnostic(readings, resolution, brandKey, conn.templateSettings?.utcOffset ?? 8, startDate, endDate));
+      } else if (resolution === "Daily") {
+        const settingsForFacility = conn.templateSettings || {};
+        const utcOffset = settingsForFacility.utcOffset ?? 8;
+        const filtered = readings.filter(r => {
+          if (String(r.resolution).trim() !== "Daily") return false;
+          const wc = TemplateExport.wallClockFromRow(r, brandKey, utcOffset);
+          if (!wc) return false;
+          const localDate = `${wc.y}-${String(wc.mo).padStart(2, "0")}-${String(wc.d).padStart(2, "0")}`;
+          return localDate >= startDate && localDate <= endDate;
+        });
+        const groups = buildDailyExportGroups(filtered, brandKey, settingsForFacility, grouping, stationNameMap(conn), startDate, endDate);
+        renderExportResults(conn, { resolution, template: null }, groups, filtered.length, "Daily");
+        Audit.log("Export built", conn.companyName, `Daily · ${startDate} → ${endDate} · ${groupingDesc} · ${filtered.length} row(s) · ${groups.length} file(s)`);
+        qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.` + (filtered.length ? "" : exportDiagnostic(readings, resolution, brandKey, utcOffset, startDate, endDate));
       } else {
         const settingsForFacility = conn.templateSettings || {};
         const startMonth = `${startDate.slice(0, 7)}-01`;
@@ -1612,6 +1628,66 @@ const App = (() => {
     return groups;
   }
 
+  // The Daily template is fixed: one sheet per calendar month in the range
+  // (sheet title = the month), header "Date | PV Yield", one row per day, then a
+  // Total row summing that month's PV Yield. Stations sharing an AGG ID are summed
+  // per day (same as Hourly); stations kept separate get their own file.
+  // Days with no stored reading are left blank so every month lists all its days
+  // (clamped to the chosen start / end date).
+  const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function buildDailyExportGroups(readings, brandKey, settings, grouping, stationNames = {}, startDate, endDate) {
+    const headers = ["Date", "PV Yield"];
+    const byGroup = new Map(); // group key -> { g, days: Map("YYYY-MM-DD" -> kWh), members }
+    for (const r of readings) {
+      const wc = TemplateExport.wallClockFromRow(r, brandKey, settings.utcOffset ?? 8);
+      if (!wc) continue;
+      const g = TemplateExport.groupFor(r.stationId, settings, grouping);
+      const day = `${wc.y}-${String(wc.mo).padStart(2, "0")}-${String(wc.d).padStart(2, "0")}`;
+      if (!byGroup.has(g.key)) byGroup.set(g.key, { g, days: new Map(), members: new Set() });
+      const entry = byGroup.get(g.key);
+      entry.members.add(stationNames[r.stationId] || r.stationName || r.stationId);
+      entry.days.set(day, (entry.days.get(day) || 0) + (Number(r.kwh) || 0));
+    }
+    const toUTC = (iso) => { const [y, m, d] = iso.split("-").map(Number); return Date.UTC(y, m - 1, d); };
+    const groups = [];
+    for (const { g, days, members } of byGroup.values()) {
+      const sheets = [];
+      const monthKeys = [...new Set([...days.keys()].map(d => d.slice(0, 7)))].sort();
+      // Also cover months in the range that have gaps only in the middle (first→last month)
+      const months = [];
+      if (monthKeys.length) {
+        let [y, m] = monthKeys[0].split("-").map(Number);
+        const [ly, lm] = monthKeys[monthKeys.length - 1].split("-").map(Number);
+        while (y < ly || (y === ly && m <= lm)) { months.push([y, m]); m++; if (m > 12) { m = 1; y++; } }
+      }
+      let dayRows = 0;
+      for (const [y, m] of months) {
+        const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+        const first = Math.max(toUTC(`${y}-${String(m).padStart(2, "0")}-01`), toUTC(startDate));
+        const last = Math.min(toUTC(`${y}-${String(m).padStart(2, "0")}-${String(dim).padStart(2, "0")}`), toUTC(endDate));
+        const rows = [];
+        let total = 0;
+        for (let t = first; t <= last; t += 86400000) {
+          const dt = new Date(t);
+          const iso = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+          const serial = (t - Date.UTC(1899, 11, 30)) / 86400000; // Excel date serial
+          if (days.has(iso)) {
+            const v = Math.round(days.get(iso) * 1e6) / 1e6; // only strips float noise from summing; values otherwise as stored
+            total += v; dayRows++;
+            rows.push([serial, v]);
+          } else {
+            rows.push([serial, null]);
+          }
+        }
+        sheets.push({ name: `${MONTH_ABBR[m - 1]} ${y}`, headers, rows, total: Math.round(total * 1e6) / 1e6 });
+      }
+      groups.push({ key: g.key, facilityId: g.facilityId, stationId: g.stationId, members: [...members].sort(),
+        stationName: g.stationId ? (stationNames[g.stationId] || g.stationId) : "", headers, sheets, rows: Array.from({ length: dayRows }) });
+    }
+    groups.sort((a, b) => a.facilityId.localeCompare(b.facilityId) || a.stationName.localeCompare(b.stationName));
+    return groups;
+  }
+
   function renderExportResults(conn, exportKind, groups, rowCount, resolutionLabel) {
     qs("expResultsCard").hidden = false;
     qs("expSummary").innerHTML = groups.length
@@ -1623,7 +1699,7 @@ const App = (() => {
     groups.forEach(g => {
       const row = document.createElement("div");
       row.className = "export-facility-row";
-      const formatLabel = exportKind.resolution === "Hourly" ? `Template ${exportKind.template}` : "Monthly template";
+      const formatLabel = exportKind.resolution === "Hourly" ? `Template ${exportKind.template}` : exportKind.resolution === "Daily" ? "Daily template" : "Monthly template";
       row.innerHTML = `
         <div>
           <div style="font-weight:600;">${escapeHtml(g.facilityId)}${g.stationName ? ` <span style="font-weight:400;color:var(--muted);">· ${escapeHtml(g.stationName)}</span>` : ""}</div>
@@ -1637,10 +1713,30 @@ const App = (() => {
   }
 
   function downloadExportFacility(conn, exportKind, group) {
-    Audit.log("Export downloaded", conn.companyName, `${groupLabel(group)}${group.stationName ? "" : ` (${group.members.join(", ")})`} · ${exportKind.resolution === "Hourly" ? `Template ${exportKind.template}` : "Monthly"} · ${group.rows.length} row(s)`);
+    Audit.log("Export downloaded", conn.companyName, `${groupLabel(group)}${group.stationName ? "" : ` (${group.members.join(", ")})`} · ${exportKind.resolution === "Hourly" ? `Template ${exportKind.template}` : exportKind.resolution} · ${group.rows.length} row(s)`);
     const safeFacility = (group.stationName ? `${group.facilityId}_${group.stationName}` : group.facilityId).replace(/[^a-z0-9_-]+/gi, "_");
-    const ws = XLSX.utils.aoa_to_sheet([group.headers, ...group.rows]);
     const wb = XLSX.utils.book_new();
+    if (exportKind.resolution === "Daily") {
+      for (const sh of group.sheets) {
+        const ws = XLSX.utils.aoa_to_sheet([sh.headers]);
+        sh.rows.forEach(([serial, v], i) => {
+          const r = i + 1; // 0-based row index; header is row 0
+          ws[XLSX.utils.encode_cell({ r, c: 0 })] = { t: "n", v: serial, z: "dd/mm/yyyy" };
+          if (v != null) ws[XLSX.utils.encode_cell({ r, c: 1 })] = { t: "n", v };
+        });
+        const totalRow = sh.rows.length + 1;
+        ws[XLSX.utils.encode_cell({ r: totalRow, c: 0 })] = { t: "s", v: "Total" };
+        ws[XLSX.utils.encode_cell({ r: totalRow, c: 1 })] = sh.rows.length
+          ? { t: "n", f: `SUM(B2:B${sh.rows.length + 1})`, v: sh.total }
+          : { t: "n", v: 0 };
+        ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: totalRow, c: 1 } });
+        ws["!cols"] = [{ wch: 14 }, { wch: 14 }];
+        XLSX.utils.book_append_sheet(wb, ws, sh.name);
+      }
+      XLSX.writeFile(wb, `${conn.companyName}_${safeFacility}_export_daily.xlsx`);
+      return;
+    }
+    const ws = XLSX.utils.aoa_to_sheet([group.headers, ...group.rows]);
     if (exportKind.resolution === "Hourly") {
       const sheetName = exportKind.template === "1" ? "Data" : "MeterData";
       XLSX.utils.book_append_sheet(wb, ws, sheetName);
