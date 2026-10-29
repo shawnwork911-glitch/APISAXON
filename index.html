@@ -379,6 +379,7 @@ tbody tr:last-child td{border-bottom:none;}
             <label>Resolution</label>
             <select id="expResolution">
               <option value="Hourly">Hourly</option>
+              <option value="Daily">Daily</option>
               <option value="Monthly">Monthly</option>
             </select>
           </div>
@@ -413,6 +414,7 @@ tbody tr:last-child td{border-bottom:none;}
           </select>
         </div>
         <div id="expGroupingWrap" class="grouping-block"></div>
+        <div id="expDailyNote" hidden class="field-help" style="margin-top:8px;">Daily uses one fixed format — no template choice needed. One sheet per month in the range (sheet named e.g. <code>Oct 2026</code>) with columns <code>Date, PV Yield</code> (kWh), one row per day, and a <strong>Total</strong> row at the bottom summing that month's PV Yield. Stations sharing an AGG ID are summed per day.</div>
         <div id="expMonthlyNote" hidden class="field-help" style="margin-top:8px;">Start / End month only list months that already have Monthly data for this company. Monthly uses one fixed format — no template choice needed: <code>GEN ID, stationName, collectTime, PVYield</code>, one row per station per month.</div>
         <div style="margin-top:12px;">
           <button class="btn btn-primary" id="btnRunExport">Build export</button>
