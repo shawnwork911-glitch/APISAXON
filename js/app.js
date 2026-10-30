@@ -1561,6 +1561,7 @@ const App = (() => {
           return localDate >= startDate && localDate <= endDate;
         });
         const groups = TemplateExport.build(filtered, brandKey, baseSettings, grouping, stationNameMap(conn));
+        attachMissingNotes(groups, "Hourly", startDate, endDate, baseSettings.template);
         renderExportResults(conn, { resolution, template: baseSettings.template }, groups, filtered.length, "Hourly");
         Audit.log("Export built", conn.companyName, `Hourly · Template ${baseSettings.template} · ${startDate} → ${endDate} · ${groupingDesc} · ${filtered.length} row(s) · ${groups.length} file(s)`);
         qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.` + (filtered.length ? "" : exportDiagnostic(readings, resolution, brandKey, conn.templateSettings?.utcOffset ?? 8, startDate, endDate));
@@ -1589,6 +1590,7 @@ const App = (() => {
           return rowMonth >= startMonth && rowMonth <= endDate;
         });
         const groups = buildMonthlyExportGroups(filtered, brandKey, settingsForFacility, grouping, stationNameMap(conn));
+        attachMissingNotes(groups, "Monthly", startDate, endDate);
         renderExportResults(conn, { resolution, template: null }, groups, filtered.length, "Monthly");
         Audit.log("Export built", conn.companyName, `Monthly · ${startDate} → ${endDate} · ${groupingDesc} · ${filtered.length} row(s) · ${groups.length} file(s)`);
         qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.` + (filtered.length ? "" : exportDiagnostic(readings, resolution, brandKey, conn.templateSettings?.utcOffset ?? 8, startDate, endDate));
@@ -1606,7 +1608,7 @@ const App = (() => {
   // Combined stations of an AGG ID: one file holding all their rows. Stations
   // kept separate (see the AGG ID grouping picker): one file per station.
   function buildMonthlyExportGroups(readings, brandKey, settings, grouping, stationNames = {}) {
-    const headers = ["GEN ID", "stationName", "collectTime", "PVYield"];
+    const headers = ["GEN ID", "stationName", "collectTime", "PVYield (kWh)"];
     const byGroup = new Map(); // group key -> { g, entries }
     for (const r of readings) {
       const wc = TemplateExport.wallClockFromRow(r, brandKey, settings.utcOffset ?? 8);
@@ -1636,7 +1638,7 @@ const App = (() => {
   // (clamped to the chosen start / end date).
   const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   function buildDailyExportGroups(readings, brandKey, settings, grouping, stationNames = {}, startDate, endDate, companyName = "") {
-    const headers = ["Date", "PV Yield", "Company", "Device ID"];
+    const headers = ["Date", "PV Yield (kWh)", "Company", "Device ID"];
     const byGroup = new Map(); // group key -> { g, days: Map("YYYY-MM-DD" -> kWh), members }
     for (const r of readings) {
       const wc = TemplateExport.wallClockFromRow(r, brandKey, settings.utcOffset ?? 8);
@@ -1688,6 +1690,73 @@ const App = (() => {
     return groups;
   }
 
+  // ---- Missing-data check, written under the table of every exported sheet ----
+  // Hourly : days with no hourly rows at all, plus hours missing inside a day's
+  //          recorded span (night hours outside the first/last reading are not
+  //          counted, since solar systems produce nothing then).
+  // Daily  : days in the range with no reading (the blank PV Yield rows).
+  // Monthly: months in the range with no monthly row.
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const isoToDMY = (iso) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
+  const isoDaysBetween = (a, b) => {
+    const out = [];
+    const toUTC = (iso) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10));
+    for (let t = toUTC(a); t <= toUTC(b); t += 86400000) {
+      const d = new Date(t);
+      out.push(`${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`);
+    }
+    return out;
+  };
+  // ["2026-10-03","2026-10-04","2026-10-09"] -> "03/10/2026 – 04/10/2026 (2 days), 09/10/2026"
+  function compressDays(isoDays) {
+    const days = [...isoDays].sort();
+    const parts = [];
+    let i = 0;
+    while (i < days.length) {
+      let j = i;
+      while (j + 1 < days.length && isoDaysBetween(days[j], days[j + 1]).length === 2) j++;
+      parts.push(j === i ? isoToDMY(days[i]) : `${isoToDMY(days[i])} – ${isoToDMY(days[j])} (${j - i + 1} days)`);
+      i = j + 1;
+    }
+    return parts.join(", ");
+  }
+  function missingNoteLines(resolution, group, startDate, endDate, template) {
+    if (resolution === "Hourly") {
+      const hoursByDay = new Map();
+      for (const row of group.rows) {
+        const ts = String(template === "1" ? row[3] : row[0]); // "YYYY-MM-DD HH…" or "YYYY-MM-DDTHH…"
+        const day = ts.slice(0, 10), hr = Number(ts.slice(11, 13));
+        if (!hoursByDay.has(day)) hoursByDay.set(day, new Set());
+        hoursByDay.get(day).add(hr);
+      }
+      const noData = [], partial = [];
+      for (const day of isoDaysBetween(startDate, endDate)) {
+        const hrs = hoursByDay.get(day);
+        if (!hrs) { noData.push(day); continue; }
+        const lo = Math.min(...hrs), hi = Math.max(...hrs), gaps = [];
+        for (let h = lo; h <= hi; h++) if (!hrs.has(h)) gaps.push(`${pad2(h)}:00`);
+        if (gaps.length) partial.push(`${isoToDMY(day)}: ${gaps.join(", ")}`);
+      }
+      const lines = [];
+      if (noData.length) lines.push(`Days with no hourly data: ${compressDays(noData)}`);
+      partial.forEach(p => lines.push(`Missing hours — ${p}`));
+      return lines.length ? lines : ["No missing hourly data — every day in the range has data."];
+    }
+    // Monthly
+    const have = new Set(group.rows.map(r => String(r[2]).slice(0, 7)));
+    const missing = [];
+    let y = +startDate.slice(0, 4), m = +startDate.slice(5, 7);
+    const ey = +endDate.slice(0, 4), em = +endDate.slice(5, 7);
+    while (y < ey || (y === ey && m <= em)) {
+      if (!have.has(`${y}-${pad2(m)}`)) missing.push(`${MONTH_ABBR[m - 1]} ${y}`);
+      m++; if (m > 12) { m = 1; y++; }
+    }
+    return missing.length ? [`Missing monthly data: ${missing.join(", ")}`] : ["No missing monthly data — every month in the range has data."];
+  }
+  function attachMissingNotes(groups, resolution, startDate, endDate, template) {
+    for (const g of groups) g.missingLines = missingNoteLines(resolution, g, startDate, endDate, template);
+  }
+
   function renderExportResults(conn, exportKind, groups, rowCount, resolutionLabel) {
     qs("expResultsCard").hidden = false;
     qs("expSummary").innerHTML = groups.length
@@ -1731,14 +1800,20 @@ const App = (() => {
         ws[XLSX.utils.encode_cell({ r: totalRow, c: 1 })] = sh.rows.length
           ? { t: "n", f: `SUM(B2:B${sh.rows.length + 1})`, v: sh.total }
           : { t: "n", v: 0 };
-        ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: totalRow, c: 3 } });
+        const gapDays = sh.rows.filter(([, v]) => v == null)
+          .map(([serial]) => new Date(Date.UTC(1899, 11, 30) + serial * 86400000).toISOString().slice(0, 10));
+        const dailyNote = gapDays.length ? `Missing daily data: ${compressDays(gapDays)}` : "No missing daily data — every day in this month has a reading.";
+        ws[XLSX.utils.encode_cell({ r: totalRow + 2, c: 0 })] = { t: "s", v: "Missing data check" };
+        ws[XLSX.utils.encode_cell({ r: totalRow + 3, c: 0 })] = { t: "s", v: dailyNote };
+        ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: totalRow + 3, c: 3 } });
         ws["!cols"] = [{ wch: 14 }, { wch: 14 }, { wch: 28 }, { wch: 16 }];
         XLSX.utils.book_append_sheet(wb, ws, sh.name);
       }
       XLSX.writeFile(wb, `${conn.companyName}_${safeFacility}_export_daily.xlsx`);
       return;
     }
-    const ws = XLSX.utils.aoa_to_sheet([group.headers, ...group.rows]);
+    const noteRows = (group.missingLines || []).length ? [[], ["Missing data check"], ...group.missingLines.map(l => [l])] : [];
+    const ws = XLSX.utils.aoa_to_sheet([group.headers, ...group.rows, ...noteRows]);
     if (exportKind.resolution === "Hourly") {
       const sheetName = exportKind.template === "1" ? "Data" : "MeterData";
       XLSX.utils.book_append_sheet(wb, ws, sheetName);

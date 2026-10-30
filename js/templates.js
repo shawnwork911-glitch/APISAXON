@@ -65,7 +65,7 @@ const TemplateExport = (() => {
 
   function headersFor(template) {
     return template === "1"
-      ? ["month", "day", "year", "datetime_start_local", "local_timezone", "datetime_start_utc", "value (KWh)", "value (MWh)", "facility_id"]
+      ? ["month", "day", "year", "datetime_start_local", "local_timezone", "datetime_start_utc", "value (kWh)", "value (MWh)", "facility_id"]
       : ["datetime_start_local", "local_timezone", "datetime_start_utc", "value", "unit_of_measurement", "meter_id", "eac_facility_id", "eac_registry_id"];
   }
 
