@@ -1,5 +1,5 @@
 /* =====================================================================
-   Template export — Hourly Format (Template 1) / STX format (Template 2)
+   Template export — Hourly Format (Template 1) / STX format (Template 2) / ACT format (Template 3)
    ---------------------------------------------------------------------
    Ported from generation-data-converter.zip and cross-checked against
    fusionsolar_bot.py's save_hourly_template() (numerically matched
@@ -62,6 +62,18 @@ const TemplateExport = (() => {
     if (!isNaN(n)) return trickEpochToWc(n + utcOffsetHours * 3600 * 1000);
     return null;
   }
+
+  // Display name for a template id ("1", "2", "3"/ACT) — used in the UI and audit log.
+  function templateLabel(template) {
+    return template === "3" ? "ACT format" : `Template ${template}`;
+  }
+
+  // ACT format (template "3") — matches meter-data-template 2026.xlsx:
+  // same 8 columns as Template 2, but datetime_start_local is a plain
+  // "YYYY-MM-DD HH:MM:SS" local time (written as a real Excel date on
+  // download), datetime_start_utc is standard UTC, value is always MWh,
+  // and eac_registry_id is always "evident".
+  const ACT = { tzLabel: "Asia/Singapore", unit: "MWh", registry: "evident" };
 
   function headersFor(template) {
     return template === "1"
@@ -156,6 +168,10 @@ const TemplateExport = (() => {
           return [wc.mo, wc.d, wc.y, fmtSpace(wc), settings.tzLabel, fmtSpace(utcWc), kwhR, mwhR, facilityId];
         }
         const utcWc = trickEpochToWc(localTrick - settings.utcOffset * 3600 * 1000); // standard UTC
+        if (settings.template === "3") {
+          return [fmtSpace(wc), ACT.tzLabel, fmtSpace(utcWc), mwhR, ACT.unit,
+                  groupSettings.meterId || facilityId, facilityId, ACT.registry];
+        }
         const value = settings.unitOM === "MWh" ? mwhR : kwhR;
         return [fmtISOWithOffset(wc, settings.utcOffset), settings.tzLabel, fmtISOZ(utcWc), value,
                 settings.unitOM, groupSettings.meterId || facilityId, facilityId, groupSettings.eacRegistryId || "tigr"];
@@ -167,7 +183,7 @@ const TemplateExport = (() => {
     return groups;
   }
 
-  return { headersFor, defaultSettings, facilityKeyFor, groupFor, isSeparate, describeGrouping, build, wallClockFromRow };
+  return { headersFor, templateLabel, defaultSettings, facilityKeyFor, groupFor, isSeparate, describeGrouping, build, wallClockFromRow };
 })();
 
 if (typeof module !== "undefined") module.exports = TemplateExport;

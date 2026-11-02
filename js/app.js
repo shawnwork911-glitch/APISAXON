@@ -1563,7 +1563,7 @@ const App = (() => {
         const groups = TemplateExport.build(filtered, brandKey, baseSettings, grouping, stationNameMap(conn));
         attachMissingNotes(groups, "Hourly", startDate, endDate, baseSettings.template);
         renderExportResults(conn, { resolution, template: baseSettings.template }, groups, filtered.length, "Hourly");
-        Audit.log("Export built", conn.companyName, `Hourly · Template ${baseSettings.template} · ${startDate} → ${endDate} · ${groupingDesc} · ${filtered.length} row(s) · ${groups.length} file(s)`);
+        Audit.log("Export built", conn.companyName, `Hourly · ${TemplateExport.templateLabel(baseSettings.template)} · ${startDate} → ${endDate} · ${groupingDesc} · ${filtered.length} row(s) · ${groups.length} file(s)`);
         qs("expStatus").textContent = `Done — ${readings.length} row(s) read, ${filtered.length} in range.` + (filtered.length ? "" : exportDiagnostic(readings, resolution, brandKey, conn.templateSettings?.utcOffset ?? 8, startDate, endDate));
       } else if (resolution === "Daily") {
         const settingsForFacility = conn.templateSettings || {};
@@ -1768,7 +1768,7 @@ const App = (() => {
     groups.forEach(g => {
       const row = document.createElement("div");
       row.className = "export-facility-row";
-      const formatLabel = exportKind.resolution === "Hourly" ? `Template ${exportKind.template}` : exportKind.resolution === "Daily" ? "Daily template" : "Monthly template";
+      const formatLabel = exportKind.resolution === "Hourly" ? TemplateExport.templateLabel(exportKind.template) : exportKind.resolution === "Daily" ? "Daily template" : "Monthly template";
       row.innerHTML = `
         <div>
           <div style="font-weight:600;">${escapeHtml(g.facilityId)}${g.stationName ? ` <span style="font-weight:400;color:var(--muted);">· ${escapeHtml(g.stationName)}</span>` : ""}</div>
@@ -1782,7 +1782,7 @@ const App = (() => {
   }
 
   function downloadExportFacility(conn, exportKind, group) {
-    Audit.log("Export downloaded", conn.companyName, `${groupLabel(group)}${group.stationName ? "" : ` (${group.members.join(", ")})`} · ${exportKind.resolution === "Hourly" ? `Template ${exportKind.template}` : exportKind.resolution} · ${group.rows.length} row(s)`);
+    Audit.log("Export downloaded", conn.companyName, `${groupLabel(group)}${group.stationName ? "" : ` (${group.members.join(", ")})`} · ${exportKind.resolution === "Hourly" ? TemplateExport.templateLabel(exportKind.template) : exportKind.resolution} · ${group.rows.length} row(s)`);
     const safeFacility = (group.stationName ? `${group.facilityId}_${group.stationName}` : group.facilityId).replace(/[^a-z0-9_-]+/gi, "_");
     const wb = XLSX.utils.book_new();
     if (exportKind.resolution === "Daily") {
@@ -1814,7 +1814,27 @@ const App = (() => {
     }
     const noteRows = (group.missingLines || []).length ? [[], ["Missing data check"], ...group.missingLines.map(l => [l])] : [];
     const ws = XLSX.utils.aoa_to_sheet([group.headers, ...group.rows, ...noteRows]);
-    if (exportKind.resolution === "Hourly") {
+    if (exportKind.resolution === "Hourly" && exportKind.template === "3") {
+      // ACT format: real Excel datetimes (yyyy-mm-dd hh:mm:ss) in A and C,
+      // value shown to 4 dp — matching meter-data-template 2026.xlsx.
+      const toSerial = s => {
+        const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+        return m ? (Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) - Date.UTC(1899, 11, 30)) / 86400000 : null;
+      };
+      group.rows.forEach((row, i) => {
+        const r = i + 1; // header is row 0
+        for (const c of [0, 2]) {
+          const serial = toSerial(row[c]);
+          if (serial != null) ws[XLSX.utils.encode_cell({ r, c })] = { t: "n", v: serial, z: "yyyy-mm-dd hh:mm:ss" };
+        }
+        const vCell = ws[XLSX.utils.encode_cell({ r, c: 3 })];
+        if (vCell && vCell.t === "n") vCell.z = "0.0000";
+      });
+      ws["!cols"] = [{ wch: 20 }, { wch: 16 }, { wch: 20 }, { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 16 }];
+      const sheetName = (String(group.facilityId || "GENID").replace(/[\\\/\?\*\[\]:]/g, "_").slice(0, 31)) || "GENID";
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+      XLSX.writeFile(wb, `${conn.companyName}_${safeFacility}_export_ACT.xlsx`);
+    } else if (exportKind.resolution === "Hourly") {
       const sheetName = exportKind.template === "1" ? "Data" : "MeterData";
       XLSX.utils.book_append_sheet(wb, ws, sheetName);
       XLSX.writeFile(wb, `${conn.companyName}_${safeFacility}_export_template_${exportKind.template}.xlsx`);
