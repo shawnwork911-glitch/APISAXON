@@ -65,8 +65,19 @@ const TemplateExport = (() => {
 
   // Display name for a template id ("1", "2", "3"/ACT) — used in the UI and audit log.
   function templateLabel(template) {
-    return template === "3" ? "ACT format" : `Template ${template}`;
+    return TEMPLATE_INFO[template]?.label || `Template ${template}`;
   }
+
+  // Name + one sample row per Hourly template, for the Export tab's hover preview.
+  const TEMPLATE_INFO = {
+    "1": { label: "Normal Hourly format", desc: "kWh and MWh, month/day/year columns, one facility_id",
+           sample: [1, 1, 2026, "2026-01-01 08:00:00", "SGT", "2026-01-01 16:00:00", 135.4, 0.1354, "GEN4xx6"] },
+    "2": { label: "STX format", desc: "ISO timestamps with offset, meter_id and registry per facility",
+           sample: ["2026-01-01T08:00:00+08:00", "Asia/Singapore", "2026-01-01T00:00:00Z", 0.1354, "MWh", "M263923", "GEN4xx6", "tigr"] },
+    "3": { label: "ACT format", desc: "Excel date-times, MWh, registry always \"evident\"",
+           sample: ["2026-01-01 08:00:00", "Asia/Singapore", "2026-01-01 00:00:00", "0.1354", "MWh", "M263923", "GEN4xx6", "evident"] },
+  };
+  function templateInfo(template) { return TEMPLATE_INFO[template] || null; }
 
   // ACT format (template "3") — matches meter-data-template 2026.xlsx:
   // same 8 columns as Template 2, but datetime_start_local is a plain
@@ -183,7 +194,7 @@ const TemplateExport = (() => {
     return groups;
   }
 
-  return { headersFor, templateLabel, defaultSettings, facilityKeyFor, groupFor, isSeparate, describeGrouping, build, wallClockFromRow };
+  return { headersFor, templateLabel, templateInfo, defaultSettings, facilityKeyFor, groupFor, isSeparate, describeGrouping, build, wallClockFromRow };
 })();
 
 if (typeof module !== "undefined") module.exports = TemplateExport;
