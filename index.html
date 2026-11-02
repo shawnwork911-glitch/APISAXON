@@ -190,6 +190,25 @@ tbody tr:last-child td{border-bottom:none;}
 .grp-row{display:flex;align-items:flex-start;gap:8px;font-size:.82rem;padding:3px 0 3px 26px;cursor:pointer;}
 .grp-row input{margin-top:2px;}
 .grp-names{font-size:.76rem;color:var(--muted);margin-left:4px;}
+
+/* Export template picker with hover preview */
+.tpl-picker{position:relative;display:flex;flex-wrap:wrap;gap:8px;}
+.tpl-card{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:9px 14px;color:var(--ink);cursor:pointer;text-align:left;font-size:.85rem;min-width:170px;}
+.tpl-card:hover,.tpl-card:focus-visible{border-color:var(--accent);outline:none;}
+.tpl-card.selected{border-color:var(--accent);background:rgba(229,151,42,.10);color:var(--accent);font-weight:600;}
+.tpl-card small{display:block;font-weight:400;color:var(--muted);font-size:.72rem;margin-top:2px;}
+.tpl-preview{position:absolute;top:calc(100% + 8px);left:0;z-index:40;width:max-content;max-width:min(860px,100%);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;box-shadow:0 12px 32px rgba(0,0,0,.45);pointer-events:none;}
+.tpl-preview[hidden]{display:none;}
+.tpl-preview h4{margin:0 0 2px;font-size:.86rem;}
+.tpl-preview .tpl-desc{font-size:.74rem;color:var(--muted);margin-bottom:8px;}
+.tpl-preview .tpl-sheet{overflow-x:auto;border:1px solid #2c3442;border-radius:4px;}
+.tpl-preview table{font-size:.74rem;font-family:Calibri,"Segoe UI",sans-serif;background:#fff;color:#111;}
+.tpl-preview th,.tpl-preview td{border:1px solid #d4d4d4;padding:4px 8px;white-space:nowrap;position:static;}
+.tpl-preview thead th{background:#f2f2f2;color:#111;font-weight:700;}
+.tpl-preview .rn{background:#e9e9e9;color:#666;text-align:center;font-weight:400;width:26px;}
+.tpl-preview .colhdr th{background:#e9e9e9;color:#666;font-weight:400;text-align:center;}
+.tpl-preview tbody td{color:#333;}
+.tpl-preview .tpl-foot{font-size:.7rem;color:var(--muted);margin-top:6px;}
 </style>
 </head>
 <body>
@@ -406,13 +425,14 @@ tbody tr:last-child td{border-bottom:none;}
             </div>
           </div>
         </div>
-        <div id="expTemplateWrap" class="field" style="max-width:340px;margin-top:8px;">
-          <label>Template (Hourly only)</label>
-          <select id="expTemplate">
-            <option value="1">Template 1 — Hourly Format</option>
-            <option value="2">Template 2 — STX format</option>
+        <div id="expTemplateWrap" class="field" style="margin-top:8px;">
+          <label>Template (Hourly only) <span style="text-transform:none;opacity:.8;">— hover a format to preview its columns</span></label>
+          <select id="expTemplate" hidden>
+            <option value="1">Normal Hourly format</option>
+            <option value="2">STX format</option>
             <option value="3">ACT format</option>
           </select>
+          <div class="tpl-picker" id="expTemplatePicker" role="radiogroup" aria-label="Export template"></div>
         </div>
         <div id="expGroupingWrap" class="grouping-block"></div>
         <div id="expDailyNote" hidden class="field-help" style="margin-top:8px;">Daily uses one fixed format — no template choice needed. One sheet per month in the range (sheet named e.g. <code>Oct 2026</code>) with columns <code>Date, PV Yield (kWh)</code>, <code>Company</code> and <code>Device ID</code> (the facility_id / AGG ID), one row per day, and a <strong>Total</strong> row at the bottom summing that month's PV Yield. Stations sharing an AGG ID are summed per day.</div>
@@ -446,7 +466,7 @@ tbody tr:last-child td{border-bottom:none;}
         <div class="extraction-grid" style="grid-template-columns:1fr 1fr 1.4fr;">
           <div class="field"><label>User</label><select id="auditFilterUser"><option value="">All users</option></select></div>
           <div class="field"><label>Action</label><select id="auditFilterAction"><option value="">All actions</option></select></div>
-          <div class="field"><label>Search company / details</label><input id="auditFilterText" placeholder="e.g. Ding Fu, GEN3228, Template 2"></div>
+          <div class="field"><label>Search company / details</label><input id="auditFilterText" placeholder="e.g. Ding Fu, GEN3228, STX format"></div>
         </div>
         <div id="auditStatus" class="field-help" style="margin:10px 0;"></div>
         <div class="table-scroll" style="max-height:620px;"><table id="auditTable"></table></div>
@@ -497,7 +517,7 @@ tbody tr:last-child td{border-bottom:none;}
     </div>
     <div class="modal-sub">STATIONS &amp; TEMPLATE EXPORT IDENTIFIERS</div>
     <div class="field-help" style="margin-bottom:8px;">
-      facility_id ties stations together for Template 1/2/ACT exports — stations sharing one are summed per hour into a single output. meter_id is used for Template 2 and ACT format, eac_registry_id for Template 2 only (ACT always uses "evident"); both can be left blank to default to the facility_id.
+      facility_id ties stations together for Hourly exports (Normal Hourly, STX and ACT formats) — stations sharing one are summed per hour into a single output. meter_id is used for STX and ACT formats, eac_registry_id for STX format only (ACT always uses "evident"); both can be left blank to default to the facility_id.
     </div>
     <div id="stationsModalMissingWarning" hidden class="callout warn" style="margin-bottom:8px;"></div>
     <div class="stations-summary" style="display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--line);border-radius:10px;padding:10px 14px;background:var(--panel2);">
@@ -516,7 +536,7 @@ tbody tr:last-child td{border-bottom:none;}
         </div>
       </div>
       <div id="stationsModalFacilityWrap">
-        <label style="display:block;font-size:.74rem;color:var(--muted);letter-spacing:.03em;margin-bottom:6px;">FACILITY DETAILS (Template 2 / ACT)</label>
+        <label style="display:block;font-size:.74rem;color:var(--muted);letter-spacing:.03em;margin-bottom:6px;">FACILITY DETAILS (STX / ACT format)</label>
         <div class="table-scroll" style="max-height:400px;">
           <table id="stationsModalFacilityTable"></table>
         </div>
@@ -658,10 +678,71 @@ tbody tr:last-child td{border-bottom:none;}
 <script src="js/proxy-client.js?v=20260930k"></script>
 <script src="js/datepicker.js?v=20260930k"></script>
 <script src="js/sheets-client.js?v=20260930k"></script>
-<script src="js/templates.js?v=20261102a"></script>
+<script src="js/templates.js?v=20261102b"></script>
 <script src="js/compare.js?v=20261005c"></script>
 <script src="js/import.js?v=20261002e"></script>
 <script src="js/extraction.js?v=20260930k"></script>
-<script src="js/app.js?v=20261102a"></script>
+<script src="js/app.js?v=20261102b"></script>
+<script>
+/* Export template picker: cards drive the hidden #expTemplate select (which
+   app.js reads), and hovering/focusing a card previews its header row. */
+(function () {
+  const select = document.getElementById("expTemplate");
+  const picker = document.getElementById("expTemplatePicker");
+  if (!select || !picker || typeof TemplateExport === "undefined") return;
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const colLetter = i => String.fromCharCode(65 + i);
+
+  const preview = document.createElement("div");
+  preview.className = "tpl-preview";
+  preview.hidden = true;
+  picker.appendChild(preview);
+
+  function renderPreview(value) {
+    const info = TemplateExport.templateInfo(value) || {};
+    const headers = TemplateExport.headersFor(value);
+    const sample = info.sample || [];
+    preview.innerHTML =
+      `<h4>${esc(info.label || value)}</h4><div class="tpl-desc">${esc(info.desc || "")}</div>` +
+      `<div class="tpl-sheet"><table>` +
+      `<thead><tr class="colhdr"><th class="rn"></th>${headers.map((_, i) => `<th>${colLetter(i)}</th>`).join("")}</tr>` +
+      `<tr><th class="rn">1</th>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead>` +
+      `<tbody><tr><td class="rn">2</td>${headers.map((_, i) => `<td>${esc(sample[i] ?? "")}</td>`).join("")}</tr></tbody>` +
+      `</table></div><div class="tpl-foot">Row 1 = header · Row 2 = sample data</div>`;
+    preview.hidden = false;
+  }
+  const hidePreview = () => { preview.hidden = true; };
+
+  function sync() {
+    picker.querySelectorAll(".tpl-card").forEach(c => {
+      const on = c.dataset.value === select.value;
+      c.classList.toggle("selected", on);
+      c.setAttribute("aria-checked", on ? "true" : "false");
+    });
+  }
+
+  [...select.options].forEach(opt => {
+    const info = TemplateExport.templateInfo(opt.value) || {};
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "tpl-card";
+    card.dataset.value = opt.value;
+    card.setAttribute("role", "radio");
+    card.innerHTML = `${esc(info.label || opt.textContent)}<small>${TemplateExport.headersFor(opt.value).length} columns</small>`;
+    card.addEventListener("click", () => {
+      select.value = opt.value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      sync();
+    });
+    card.addEventListener("mouseenter", () => renderPreview(opt.value));
+    card.addEventListener("focus", () => renderPreview(opt.value));
+    card.addEventListener("mouseleave", hidePreview);
+    card.addEventListener("blur", hidePreview);
+    picker.insertBefore(card, preview);
+  });
+  select.addEventListener("change", sync);
+  sync();
+})();
+</script>
 </body>
 </html>
