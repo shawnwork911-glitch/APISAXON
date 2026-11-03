@@ -142,6 +142,11 @@ tbody tr:last-child td{border-bottom:none;}
 .job-bar{height:6px;background:#0f141c;border-radius:99px;overflow:hidden;margin-bottom:8px;}
 .job-bar-fill{height:100%;width:0;background:var(--accent);transition:width .2s ease;}
 .job-status{font-size:.78rem;color:var(--muted);}
+.auto-toggle{display:flex;gap:10px;align-items:flex-start;margin-top:14px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);cursor:pointer;font-size:.86rem;max-width:760px;}
+.auto-toggle input{margin-top:3px;}
+.job-row .pill{margin-left:6px;vertical-align:1px;}
+.pill.err{background:rgba(217,75,75,.16);color:var(--err);}
+.pill.muted{background:rgba(138,150,166,.16);color:var(--muted);}
 
 /* Settings */
 .settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
@@ -321,6 +326,11 @@ tbody tr:last-child td{border-bottom:none;}
           </div>
           <button class="btn btn-primary" id="btnQueueExtraction">Queue extraction</button>
         </div>
+        <label class="auto-toggle" for="extAutoContinue">
+          <input type="checkbox" id="extAutoContinue">
+          <span><strong>Auto-continue on the server until the end date</strong>
+            <span class="field-help" style="display:block;margin-top:2px;">Runs every hour, even with this page closed. It pulls as many days as the brand's daily limit allows, picks up again the next day, and adds each new day once it's complete, until the end date is saved. The end date can be in the future. FusionSolar and SolarEdge only.</span></span>
+        </label>
       </div>
 
       <div class="card">
@@ -329,6 +339,15 @@ tbody tr:last-child td{border-bottom:none;}
           <button class="btn btn-primary" id="btnResumeAll" hidden>Resume all</button>
         </div>
         <div id="jobList"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>Auto-continue jobs</h3>
+          <button class="btn btn-ghost" id="btnAutoJobsRefresh">Refresh</button>
+        </div>
+        <div class="field-help" style="margin:-6px 0 10px;">Run on the server every hour and saved to the <code>Jobs</code> tab of your Google Sheet. Progress here refreshes every minute while this tab is open.</div>
+        <div id="autoJobList"></div>
       </div>
     </div>
 
@@ -486,6 +505,8 @@ tbody tr:last-child td{border-bottom:none;}
           Inverter-brand APIs are called server-to-server in your Postman collections; most block direct requests from a browser. Deploy the Azure Function or Cloudflare Worker template in <code>/api-proxy</code> (see its README), then paste its base URL below.
         </div>
         <div class="field"><label>Proxy base URL</label><input id="cfgProxyUrl" placeholder="https://your-function.azurewebsites.net/api"></div>
+        <div class="field"><label>Auto-continue scheduler URL</label><input id="cfgSchedulerUrl" placeholder="https://solarlink-scheduler.your-subdomain.workers.dev">
+          <div class="field-help">The <code>api-proxy/cloudflare-scheduler</code> Worker that continues auto-continue extraction jobs every hour. See its README.</div></div>
       </div>
 
       <div class="card">
@@ -682,7 +703,8 @@ tbody tr:last-child td{border-bottom:none;}
 <script src="js/compare.js?v=20261005c"></script>
 <script src="js/import.js?v=20261002e"></script>
 <script src="js/extraction.js?v=20260930k"></script>
-<script src="js/app.js?v=20261102b"></script>
+<script src="js/scheduler-client.js?v=20261103a"></script>
+<script src="js/app.js?v=20261103a"></script>
 <script>
 /* Export template picker: cards drive the hidden #expTemplate select (which
    app.js reads), and hovering/focusing a card previews its header row. */

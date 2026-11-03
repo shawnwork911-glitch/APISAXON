@@ -1,0 +1,10 @@
+{
+  "name": "solarlink-scheduler",
+  "private": true,
+  "type": "module",
+  "description": "Auto-continue extraction scheduler (Cloudflare Worker + hourly Cron Trigger).",
+  "scripts": {
+    "test": "node test/simulate.mjs",
+    "deploy": "wrangler deploy"
+  }
+}

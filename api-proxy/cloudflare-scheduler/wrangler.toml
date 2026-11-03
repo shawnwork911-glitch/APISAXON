@@ -1,0 +1,21 @@
+name = "solarlink-scheduler"
+main = "src/worker.js"
+compatibility_date = "2024-09-01"
+
+# Hourly, at 7 minutes past (UTC). Each run continues every active
+# auto-continue job as far as quota allows; a job that's caught up just
+# waits for the next complete day.
+[triggers]
+crons = ["7 * * * *"]
+
+# Same Sheet and sign-in client as the CORS proxy (see ../cloudflare-worker/wrangler.toml).
+# Secrets are set separately — same values as the proxy:
+#   wrangler secret put GOOGLE_SERVICE_ACCOUNT_EMAIL
+#   wrangler secret put GOOGLE_SERVICE_ACCOUNT_KEY
+[vars]
+GOOGLE_SPREADSHEET_ID = "1Sq2AYWWDOBvlrrvcesw3bxrJHWE0xe-m5i_qkG46BCY"
+GOOGLE_SIGNIN_CLIENT_ID = "336493659847-g7ip6cjvb4un4ouru4fod3605a50q2gu.apps.googleusercontent.com"
+# Workers Free = 50 subrequests per run; keep a little headroom. On Workers Paid, raise to 900.
+MAX_SUBREQUESTS = "45"
+# Local (site) hour after which yesterday's data counts as complete.
+SETTLE_HOUR = "2"

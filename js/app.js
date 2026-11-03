@@ -44,6 +44,7 @@ const App = (() => {
     qs("cfgSpreadsheetId").value = cfg?.spreadsheetId || "";
     qs("cfgProxyUrl").value = ProxyClient.getProxyBaseUrl();
     qs("cfgSignInClientId").value = AuthClient.loadClientId();
+    qs("cfgSchedulerUrl").value = SchedulerClient.getBaseUrl();
 
     startAuthGate();
   }
@@ -180,6 +181,7 @@ const App = (() => {
     qs("btnDownloadCompare").addEventListener("click", handleDownloadCompare);
     qs("btnRunExport").addEventListener("click", handleRunExport);
     qs("btnResumeAll").addEventListener("click", handleResumeAll);
+    qs("btnAutoJobsRefresh").addEventListener("click", () => renderAutoJobs());
     qs("expResolution").addEventListener("change", () => { syncExportFieldVisibility(); refreshExportMonths(); });
     qs("expCompany").addEventListener("change", handleExportCompanyChange);
 
@@ -220,7 +222,9 @@ const App = (() => {
     currentView = view;
     Object.entries(els).forEach(([k, el]) => el.classList.toggle("active", k === view));
     document.querySelectorAll(".nav-btn[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === view));
-    if (view === "extraction") { populateExtractionCompanySelect(); renderPersistedPendingJobs(); }
+    if (view === "extraction") { populateExtractionCompanySelect(); renderPersistedPendingJobs(); renderAutoJobs(); }
+    clearInterval(autoJobsTimer);
+    autoJobsTimer = view === "extraction" ? setInterval(() => renderAutoJobs({ quiet: true }), 60000) : null;
     if (view === "compare") populateCompareCompanySelect();
     if (view === "export") { populateExportCompanySelect(); syncExportFieldVisibility(); }
     if (view === "audit") loadAuditLog();
@@ -239,12 +243,13 @@ const App = (() => {
   async function handleSaveSettings() {
     SheetsClient.saveConfig({ spreadsheetId: qs("cfgSpreadsheetId").value.trim() });
     ProxyClient.setProxyBaseUrl(qs("cfgProxyUrl").value.trim());
+    SchedulerClient.setBaseUrl(qs("cfgSchedulerUrl").value.trim());
     const newClientId = qs("cfgSignInClientId").value.trim();
     const clientIdChanged = newClientId !== AuthClient.loadClientId();
     AuthClient.saveClientId(newClientId);
     updateConnectionBanner();
     qs("settingsSavedNote").textContent = "Saved.";
-    Audit.log("Settings saved", "", `Proxy: ${qs("cfgProxyUrl").value.trim() || "(blank)"} · Sheet ID: ${qs("cfgSpreadsheetId").value.trim() || "(blank)"}${clientIdChanged ? " · Sign-in Client ID changed" : ""}`);
+    Audit.log("Settings saved", "", `Proxy: ${qs("cfgProxyUrl").value.trim() || "(blank)"} · Sheet ID: ${qs("cfgSpreadsheetId").value.trim() || "(blank)"} · Scheduler: ${qs("cfgSchedulerUrl").value.trim() || "(blank)"}${clientIdChanged ? " · Sign-in Client ID changed" : ""}`);
     qs("settingsSavedNote").style.color = "var(--ok)";
     if (SheetsClient.isConfigured()) {
       try {
@@ -1918,8 +1923,12 @@ const App = (() => {
     if (endDate < startDate) { alert("End date is before start date — please fix the range."); return; }
     if (!stationIds.length) { alert("Tick at least one station."); return; }
     const today = localISODate(new Date()); // local date — toISOString() gave yesterday's date before 8am in UTC+8
+    if (qs("extAutoContinue").checked) { await queueAutoContinueJob(conn, resolution, stationIds, startDate, endDate); return; }
     if (endDate > today) {
-      alert("End date can't be in the future — data for days that haven't happened yet doesn't exist. Pick today or an earlier date.");
+      if (confirm("The end date is in the future, so this range can't be finished today.\n\nSwitch on \"Auto-continue on the server\"? The server will extract what's available now, then keep going every day until the end date is saved.")) {
+        qs("extAutoContinue").checked = true;
+        await queueAutoContinueJob(conn, resolution, stationIds, startDate, endDate);
+      }
       return;
     }
 
@@ -1954,6 +1963,119 @@ const App = (() => {
       queueExtractionJob(conn, resolution, stationIds, startDate, endDate);
     } else {
       Audit.log("Extraction blocked — already extracted", conn.companyName, `${rangeText} · ${plan.doneText}`);
+    }
+  }
+
+  /* ---------------------------- auto-continue (server) jobs ---------------------------- */
+  // Long or future-dated ranges are handed to the scheduler Worker
+  // (api-proxy/cloudflare-scheduler), which keeps extracting every hour —
+  // up to each brand's daily quota and never past the last complete day —
+  // until the end date is saved, whether or not this page is open.
+  let autoJobsTimer = null;
+  const AUTO_BRANDS = ["fusionsolar", "solaredge"];
+
+  async function queueAutoContinueJob(conn, resolution, stationIds, startDate, endDate) {
+    if (!AUTO_BRANDS.includes(conn.brand)) {
+      alert(`Auto-continue currently works for FusionSolar and SolarEdge only. ${BRANDS[conn.brand]?.label || conn.brand}'s historical-data endpoint isn't confirmed yet.`);
+      return;
+    }
+    if (!SchedulerClient.isConfigured()) { alert("Set the auto-continue scheduler URL under Settings first."); return; }
+    const btn = qs("btnQueueExtraction");
+    btn.disabled = true;
+    try {
+      // Days already in the Readings tab are skipped by the server, same as "Fetch missing only".
+      let skip = [];
+      const yesterday = localISODate(new Date(Date.now() - 86400000));
+      const pastEnd = minISO(endDate, yesterday);
+      if (startDate <= pastEnd) {
+        const plan = await planExtraction(conn, resolution, stationIds, startDate, pastEnd);
+        if (plan.done.length) {
+          const ok = confirm(`${plan.done.length} ${plan.unit}(s) in this range are already in the Readings tab and will be skipped:\n${plan.doneText}\n\nQueue the rest for auto-continue?`);
+          if (!ok) { Audit.log("Auto-continue not queued — already extracted", conn.companyName, `${resolution} · ${startDate} → ${endDate} · ${plan.doneText}`); return; }
+          skip = plan.done;
+        }
+      }
+      const job = await SchedulerClient.create({ connectionId: conn.id, resolution, stationIds, startDate, endDate, skip });
+      Audit.log("Auto-continue extraction queued", conn.companyName,
+        `${resolution} · ${startDate} → ${endDate} · ${stationIds.length} station(s)${skip.length ? ` · ${skip.length} already-extracted skipped` : ""}`);
+      await renderAutoJobs();
+      // The first batch runs on the server right away; show its progress shortly.
+      setTimeout(() => renderAutoJobs({ quiet: true }), 20000);
+      return job;
+    } catch (e) {
+      alert(`Couldn't queue the auto-continue job: ${e.message}`);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function renderAutoJobs({ quiet = false } = {}) {
+    const list = qs("autoJobList");
+    if (!list) return;
+    if (!SchedulerClient.isConfigured()) {
+      list.innerHTML = `<div class="empty-state">Set the auto-continue scheduler URL under Settings to use auto-continue jobs.</div>`;
+      return;
+    }
+    if (!quiet && !list.children.length) list.innerHTML = `<div class="field-help">Loading…</div>`;
+    let jobs;
+    try {
+      jobs = await SchedulerClient.list();
+    } catch (e) {
+      if (!quiet) list.innerHTML = `<div class="callout warn"><strong>Couldn't load auto-continue jobs</strong>${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    const recent = Date.now() - 14 * 86400000;
+    jobs = jobs
+      .filter(j => j.status !== "cancelled")
+      .filter(j => j.status !== "done" || Date.parse(j.updatedAt || j.createdAt || 0) > recent)
+      .sort((a, b) => (a.status === "done") - (b.status === "done") || String(b.createdAt).localeCompare(String(a.createdAt)));
+    if (!jobs.length) {
+      list.innerHTML = `<div class="empty-state">No auto-continue jobs. Tick "Auto-continue on the server" above when you queue an extraction.</div>`;
+      return;
+    }
+    list.innerHTML = "";
+    for (const j of jobs) list.appendChild(autoJobRow(j));
+  }
+
+  function autoJobRow(j) {
+    const prog = rangeProgress(j.resolution, j.startDate, j.endDate, j.cursor);
+    const pill = {
+      active: `<span class="pill ok">Auto-continuing</span>`, paused: `<span class="pill warn">Paused</span>`,
+      error: `<span class="pill err">Error</span>`, done: `<span class="pill muted">Complete</span>`,
+    }[j.status] || "";
+    const row = document.createElement("div");
+    row.className = "job-row";
+    row.innerHTML = `<div class="job-title">${escapeHtml(j.company)} · ${escapeHtml(j.resolution)} · ${escapeHtml(j.startDate)} → ${escapeHtml(j.endDate)} ${pill}</div>
+      <div class="job-bar"><div class="job-bar-fill" style="width:${prog.pct}%"></div></div>
+      <div class="job-status">${prog.hasData ? `<strong>Saved through ${escapeHtml(j.cursor)}</strong> · ${prog.done} of ${prog.total} ${prog.unit}(s) (${prog.pct}%) · ` : ""}${j.rowsSaved || 0} row(s)${j.skippedCount ? ` · ${j.skippedCount} already-extracted skipped` : ""}</div>
+      <div class="job-status" style="margin-top:4px;">${escapeHtml(j.status === "error" ? `${j.lastError || "Stopped."}` : j.note || "")}</div>
+      <div class="job-status" style="margin-top:4px;opacity:.75;">Queued by ${escapeHtml(j.createdBy || "?")}${j.lastRunAt ? ` · last run ${escapeHtml(new Date(j.lastRunAt).toLocaleString())}` : ""}</div>`;
+    const addBtn = (label, action, primary) => {
+      const b = document.createElement("button");
+      b.className = primary ? "btn btn-primary" : "btn btn-ghost";
+      b.textContent = label;
+      b.addEventListener("click", () => autoJobAction(j, action, b));
+      row.appendChild(b);
+    };
+    if (j.status === "active") { addBtn("Run now", "runNow"); addBtn("Pause", "pause"); }
+    if (j.status === "paused") addBtn("Resume", "resume", true);
+    if (j.status === "error") addBtn("Retry", "resume", true);
+    if (j.status !== "done") addBtn("Cancel", "cancel");
+    return row;
+  }
+
+  async function autoJobAction(j, action, btn) {
+    if (action === "cancel" && !confirm(`Stop auto-continuing ${j.company} · ${j.resolution} · ${j.startDate} → ${j.endDate}? Readings already saved are kept.`)) return;
+    btn.disabled = true;
+    try {
+      await SchedulerClient.act(action, j.jobId);
+      const label = { runNow: "run now", pause: "paused", resume: "resumed", cancel: "cancelled" }[action];
+      Audit.log(`Auto-continue job ${label}`, j.company, `${j.resolution} · ${j.startDate} → ${j.endDate} · saved through ${j.cursor || "nothing yet"}`);
+      await renderAutoJobs();
+      if (action === "runNow" || action === "resume") setTimeout(() => renderAutoJobs({ quiet: true }), 20000);
+    } catch (e) {
+      alert(e.message);
+      btn.disabled = false;
     }
   }
 
