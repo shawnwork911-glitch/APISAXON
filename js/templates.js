@@ -73,9 +73,9 @@ const TemplateExport = (() => {
     "1": { label: "Normal Hourly format", desc: "kWh and MWh, month/day/year columns, one facility_id",
            sample: [1, 1, 2026, "2026-01-01 08:00:00", "SGT", "2026-01-01 16:00:00", 135.4, 0.1354, "GEN4xx6"] },
     "2": { label: "STX format", desc: "ISO timestamps with offset, meter_id and registry per facility",
-           sample: ["2026-01-01T08:00:00+08:00", "Asia/Singapore", "2026-01-01T00:00:00Z", 0.1354, "MWh", "M263923", "GEN4xx6", "tigr"] },
+           sample: ["2026-01-01T08:00:00+08:00", "Asia/Singapore", "2026-01-01T00:00:00Z", 0.1354, "MWh", "", "GEN4xx6", "tigr"] },
     "3": { label: "ACT format", desc: "Excel date-times, MWh, registry always \"evident\"",
-           sample: ["2026-01-01 08:00:00", "Asia/Singapore", "2026-01-01 00:00:00", "0.1354", "MWh", "M263923", "GEN4xx6", "evident"] },
+           sample: ["2026-01-01 08:00:00", "Asia/Singapore", "2026-01-01 00:00:00", "0.1354", "MWh", "", "GEN4xx6", "evident"] },
   };
   function templateInfo(template) { return TEMPLATE_INFO[template] || null; }
 
