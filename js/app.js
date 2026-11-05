@@ -668,20 +668,19 @@ const App = (() => {
       wrap.innerHTML = `<tbody><tr><td class="field-help">No facility_id assigned yet — enter one above to see its group settings here.</td></tr></tbody>`;
       return;
     }
-    // First time a facility_id is seen, auto-copy it into meter_id as an actual
-    // value (not just a placeholder) — still editable/overridable afterwards.
-    // Only fills it when meter_id has never been touched (undefined), so a
-    // deliberately-cleared value doesn't get silently re-filled.
+    // meter_id starts empty and is exported blank unless a real meter ID is
+    // typed in — it never defaults to the facility_id. Older saves that
+    // auto-copied the facility_id are shown (and exported) as blank.
     distinct.forEach(fid => {
-      stationsModalState.facilityGroups[fid] = stationsModalState.facilityGroups[fid] || {};
-      if (stationsModalState.facilityGroups[fid].meterId === undefined) stationsModalState.facilityGroups[fid].meterId = fid;
+      const g = stationsModalState.facilityGroups[fid] = stationsModalState.facilityGroups[fid] || {};
+      if (g.meterId === fid) g.meterId = "";
     });
     wrap.innerHTML = `<thead><tr><th>facility_id</th><th>meter_id</th><th>eac_registry_id</th></tr></thead><tbody>` +
       distinct.map(fid => {
         const g = stationsModalState.facilityGroups[fid] || {};
         return `<tr>
           <td>${escapeHtml(fid)}</td>
-          <td><input type="text" class="modalFacilityMeterInput" data-facility="${escapeHtml(fid)}" value="${escapeHtml(g.meterId ?? fid)}"></td>
+          <td><input type="text" class="modalFacilityMeterInput" data-facility="${escapeHtml(fid)}" value="${escapeHtml(g.meterId ?? "")}" placeholder="(blank)"></td>
           <td><select class="modalFacilityRegistrySelect" data-facility="${escapeHtml(fid)}">
                 <option value="tigr" ${g.eacRegistryId !== "irec" ? "selected" : ""}>TIGR</option>
                 <option value="irec" ${g.eacRegistryId === "irec" ? "selected" : ""}>I-REC</option>

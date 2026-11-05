@@ -144,8 +144,9 @@ const TemplateExport = (() => {
    * Returns an array of { key, facilityId, stationId, stationName, members, headers, rows }
    * (members = names of the stations summed into it),
    * one per group, each internally summed to one row per hour and sorted
-   * earliest → latest. The facility_id / meter_id columns always carry the
-   * AGG ID, even when a facility is split per station.
+   * earliest → latest. The facility_id column always carries the AGG ID,
+   * even when a facility is split per station. meter_id is left blank unless
+   * a real meter ID was entered for the facility (never defaults to facility_id).
    */
   function build(rows, brandKey, settings, grouping, stationNames = {}) {
     const headers = headersFor(settings.template);
@@ -169,6 +170,10 @@ const TemplateExport = (() => {
     for (const { g, hours: hourMap, members } of buckets.values()) {
       const facilityId = g.facilityId;
       const groupSettings = (settings.facilityGroups || {})[facilityId] || {};
+      // meter_id stays empty unless a real one was entered. Older saved settings
+      // auto-copied facility_id into meter_id, so treat that value as blank too.
+      const rawMeter = String(groupSettings.meterId ?? "").trim();
+      const meterId = rawMeter && rawMeter !== facilityId ? rawMeter : "";
       const entries = [...hourMap.entries()].sort((a, b) => a[0] - b[0]);
       const outRows = entries.map(([localTrick, kwhSum]) => {
         const wc = trickEpochToWc(localTrick);
@@ -181,11 +186,11 @@ const TemplateExport = (() => {
         const utcWc = trickEpochToWc(localTrick - settings.utcOffset * 3600 * 1000); // standard UTC
         if (settings.template === "3") {
           return [fmtSpace(wc), ACT.tzLabel, fmtSpace(utcWc), mwhR, ACT.unit,
-                  groupSettings.meterId || facilityId, facilityId, ACT.registry];
+                  meterId, facilityId, ACT.registry];
         }
         const value = settings.unitOM === "MWh" ? mwhR : kwhR;
         return [fmtISOWithOffset(wc, settings.utcOffset), settings.tzLabel, fmtISOZ(utcWc), value,
-                settings.unitOM, groupSettings.meterId || facilityId, facilityId, groupSettings.eacRegistryId || "tigr"];
+                settings.unitOM, meterId, facilityId, groupSettings.eacRegistryId || "tigr"];
       });
       groups.push({ key: g.key, facilityId, stationId: g.stationId, members: [...members].sort(),
         stationName: g.stationId ? (stationNames[g.stationId] || g.stationId) : "", headers, rows: outRows });
