@@ -188,9 +188,16 @@ const TemplateExport = (() => {
           return [fmtSpace(wc), ACT.tzLabel, fmtSpace(utcWc), mwhR, ACT.unit,
                   meterId, facilityId, ACT.registry];
         }
-        const value = settings.unitOM === "MWh" ? mwhR : kwhR;
-        return [fmtISOWithOffset(wc, settings.utcOffset), settings.tzLabel, fmtISOZ(utcWc), value,
-                settings.unitOM, meterId, facilityId, groupSettings.eacRegistryId || "tigr"];
+        // unit_of_measurement defaults to "MWh". Companies whose saved settings
+        // started from the Normal Hourly defaults have no unitOM, which used to
+        // leave this column empty (and the value in kWh).
+        const unit = settings.unitOM === "kWh" ? "kWh" : "MWh";
+        const value = unit === "MWh" ? mwhR : kwhR;
+        // Same cause: those settings carry the Normal Hourly "SGT" label, but
+        // STX's local_timezone is the IANA name.
+        const tz = settings.tzLabel && settings.tzLabel !== "SGT" ? settings.tzLabel : "Asia/Singapore";
+        return [fmtISOWithOffset(wc, settings.utcOffset), tz, fmtISOZ(utcWc), value,
+                unit, meterId, facilityId, groupSettings.eacRegistryId || "tigr"];
       });
       groups.push({ key: g.key, facilityId, stationId: g.stationId, members: [...members].sort(),
         stationName: g.stationId ? (stationNames[g.stationId] || g.stationId) : "", headers, rows: outRows });
