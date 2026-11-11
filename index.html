@@ -449,7 +449,6 @@ tbody tr:last-child td{border-bottom:none;}
           <select id="expTemplate" hidden>
             <option value="1">Normal Hourly format</option>
             <option value="2">STX format</option>
-            <option value="3">ACT format</option>
           </select>
           <div class="tpl-picker" id="expTemplatePicker" role="radiogroup" aria-label="Export template"></div>
         </div>
@@ -538,7 +537,7 @@ tbody tr:last-child td{border-bottom:none;}
     </div>
     <div class="modal-sub">STATIONS &amp; TEMPLATE EXPORT IDENTIFIERS</div>
     <div class="field-help" style="margin-bottom:8px;">
-      facility_id ties stations together for Hourly exports (Normal Hourly, STX and ACT formats) — stations sharing one are summed per hour into a single output. meter_id is used for STX and ACT formats and is exported blank unless you enter a meter ID (it never defaults to the facility_id); eac_registry_id is for STX format only (ACT always uses "evident").
+      facility_id ties stations together for Hourly exports (Normal Hourly and STX formats) — stations sharing one are summed per hour into a single output. In STX format, meter_id is always the same as the facility_id; eac_registry_id is for STX format only.
     </div>
     <div id="stationsModalMissingWarning" hidden class="callout warn" style="margin-bottom:8px;"></div>
     <div class="stations-summary" style="display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--line);border-radius:10px;padding:10px 14px;background:var(--panel2);">
@@ -557,7 +556,7 @@ tbody tr:last-child td{border-bottom:none;}
         </div>
       </div>
       <div id="stationsModalFacilityWrap">
-        <label style="display:block;font-size:.74rem;color:var(--muted);letter-spacing:.03em;margin-bottom:6px;">FACILITY DETAILS (STX / ACT format)</label>
+        <label style="display:block;font-size:.74rem;color:var(--muted);letter-spacing:.03em;margin-bottom:6px;">FACILITY DETAILS (STX format)</label>
         <div class="table-scroll" style="max-height:400px;">
           <table id="stationsModalFacilityTable"></table>
         </div>
@@ -699,12 +698,12 @@ tbody tr:last-child td{border-bottom:none;}
 <script src="js/proxy-client.js?v=20260930k"></script>
 <script src="js/datepicker.js?v=20260930k"></script>
 <script src="js/sheets-client.js?v=20260930k"></script>
-<script src="js/templates.js?v=20261105c"></script>
+<script src="js/templates.js?v=20261111a"></script>
 <script src="js/compare.js?v=20261005c"></script>
 <script src="js/import.js?v=20261002e"></script>
 <script src="js/extraction.js?v=20260930k"></script>
 <script src="js/scheduler-client.js?v=20261103a"></script>
-<script src="js/app.js?v=20261105a"></script>
+<script src="js/app.js?v=20261111a"></script>
 <script>
 /* Export template picker: cards drive the hidden #expTemplate select (which
    app.js reads), and hovering/focusing a card previews its header row. */
