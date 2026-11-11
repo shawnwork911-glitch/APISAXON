@@ -1,5 +1,5 @@
 /* =====================================================================
-   Template export — Hourly Format (Template 1) / STX format (Template 2) / ACT format (Template 3)
+   Template export — Hourly Format (Template 1) / STX format (Template 2)
    ---------------------------------------------------------------------
    Ported from generation-data-converter.zip and cross-checked against
    fusionsolar_bot.py's save_hourly_template() (numerically matched
@@ -63,7 +63,7 @@ const TemplateExport = (() => {
     return null;
   }
 
-  // Display name for a template id ("1", "2", "3"/ACT) — used in the UI and audit log.
+  // Display name for a template id ("1", "2") — used in the UI and audit log.
   function templateLabel(template) {
     return TEMPLATE_INFO[template]?.label || `Template ${template}`;
   }
@@ -72,19 +72,10 @@ const TemplateExport = (() => {
   const TEMPLATE_INFO = {
     "1": { label: "Normal Hourly format", desc: "kWh and MWh, month/day/year columns, one facility_id",
            sample: [1, 1, 2026, "2026-01-01 08:00:00", "SGT", "2026-01-01 16:00:00", 135.4, 0.1354, "GEN4xx6"] },
-    "2": { label: "STX format", desc: "ISO timestamps with offset, meter_id and registry per facility",
-           sample: ["2026-01-01T08:00:00+08:00", "Asia/Singapore", "2026-01-01T00:00:00Z", 0.1354, "MWh", "", "GEN4xx6", "tigr"] },
-    "3": { label: "ACT format", desc: "Excel date-times, MWh, registry always \"evident\"",
-           sample: ["2026-01-01 08:00:00", "Asia/Singapore", "2026-01-01 00:00:00", "0.1354", "MWh", "", "GEN4xx6", "evident"] },
+    "2": { label: "STX format", desc: "ISO timestamps with offset, meter_id = facility_id, registry per facility",
+           sample: ["2026-01-01T08:00:00+08:00", "Asia/Singapore", "2026-01-01T00:00:00Z", 0.1354, "MWh", "GEN4xx6", "GEN4xx6", "tigr"] },
   };
   function templateInfo(template) { return TEMPLATE_INFO[template] || null; }
-
-  // ACT format (template "3") — matches meter-data-template 2026.xlsx:
-  // same 8 columns as Template 2, but datetime_start_local is a plain
-  // "YYYY-MM-DD HH:MM:SS" local time (written as a real Excel date on
-  // download), datetime_start_utc is standard UTC, value is always MWh,
-  // and eac_registry_id is always "evident".
-  const ACT = { tzLabel: "Asia/Singapore", unit: "MWh", registry: "evident" };
 
   function headersFor(template) {
     return template === "1"
@@ -145,8 +136,8 @@ const TemplateExport = (() => {
    * (members = names of the stations summed into it),
    * one per group, each internally summed to one row per hour and sorted
    * earliest → latest. The facility_id column always carries the AGG ID,
-   * even when a facility is split per station. meter_id is left blank unless
-   * a real meter ID was entered for the facility (never defaults to facility_id).
+   * even when a facility is split per station. In STX format meter_id is
+   * always the same as facility_id.
    */
   function build(rows, brandKey, settings, grouping, stationNames = {}) {
     const headers = headersFor(settings.template);
@@ -170,10 +161,8 @@ const TemplateExport = (() => {
     for (const { g, hours: hourMap, members } of buckets.values()) {
       const facilityId = g.facilityId;
       const groupSettings = (settings.facilityGroups || {})[facilityId] || {};
-      // meter_id stays empty unless a real one was entered. Older saved settings
-      // auto-copied facility_id into meter_id, so treat that value as blank too.
-      const rawMeter = String(groupSettings.meterId ?? "").trim();
-      const meterId = rawMeter && rawMeter !== facilityId ? rawMeter : "";
+      // STX format: meter_id is always the same as facility_id (the AGG ID).
+      const meterId = facilityId;
       const entries = [...hourMap.entries()].sort((a, b) => a[0] - b[0]);
       const outRows = entries.map(([localTrick, kwhSum]) => {
         const wc = trickEpochToWc(localTrick);
@@ -184,10 +173,6 @@ const TemplateExport = (() => {
           return [wc.mo, wc.d, wc.y, fmtSpace(wc), settings.tzLabel, fmtSpace(utcWc), kwhR, mwhR, facilityId];
         }
         const utcWc = trickEpochToWc(localTrick - settings.utcOffset * 3600 * 1000); // standard UTC
-        if (settings.template === "3") {
-          return [fmtSpace(wc), ACT.tzLabel, fmtSpace(utcWc), mwhR, ACT.unit,
-                  meterId, facilityId, ACT.registry];
-        }
         // unit_of_measurement defaults to "MWh". Companies whose saved settings
         // started from the Normal Hourly defaults have no unitOM, which used to
         // leave this column empty (and the value in kWh).
