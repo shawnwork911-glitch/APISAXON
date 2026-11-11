@@ -668,19 +668,16 @@ const App = (() => {
       wrap.innerHTML = `<tbody><tr><td class="field-help">No facility_id assigned yet — enter one above to see its group settings here.</td></tr></tbody>`;
       return;
     }
-    // meter_id starts empty and is exported blank unless a real meter ID is
-    // typed in — it never defaults to the facility_id. Older saves that
-    // auto-copied the facility_id are shown (and exported) as blank.
+    // meter_id is always the same as facility_id in STX exports — shown read-only.
     distinct.forEach(fid => {
-      const g = stationsModalState.facilityGroups[fid] = stationsModalState.facilityGroups[fid] || {};
-      if (g.meterId === fid) g.meterId = "";
+      stationsModalState.facilityGroups[fid] = stationsModalState.facilityGroups[fid] || {};
     });
     wrap.innerHTML = `<thead><tr><th>facility_id</th><th>meter_id</th><th>eac_registry_id</th></tr></thead><tbody>` +
       distinct.map(fid => {
         const g = stationsModalState.facilityGroups[fid] || {};
         return `<tr>
           <td>${escapeHtml(fid)}</td>
-          <td><input type="text" class="modalFacilityMeterInput" data-facility="${escapeHtml(fid)}" value="${escapeHtml(g.meterId ?? "")}" placeholder="(blank)"></td>
+          <td title="Always the same as facility_id">${escapeHtml(fid)}</td>
           <td><select class="modalFacilityRegistrySelect" data-facility="${escapeHtml(fid)}">
                 <option value="tigr" ${g.eacRegistryId !== "irec" ? "selected" : ""}>TIGR</option>
                 <option value="irec" ${g.eacRegistryId === "irec" ? "selected" : ""}>I-REC</option>
@@ -1555,7 +1552,7 @@ const App = (() => {
         // comes from what's configured on the company — only the template
         // number (1 vs 2) is chosen fresh here, independent of that saved default.
         const baseSettings = conn.templateSettings ? JSON.parse(JSON.stringify(conn.templateSettings)) : TemplateExport.defaultSettings("1");
-        baseSettings.template = qs("expTemplate").value;
+        baseSettings.template = qs("expTemplate").value === "2" ? "2" : "1"; // ACT format removed
         const utcOffset = baseSettings.utcOffset ?? 8;
         const filtered = readings.filter(r => {
           if (String(r.resolution).trim() !== "Hourly") return false;
@@ -1818,27 +1815,7 @@ const App = (() => {
     }
     const noteRows = (group.missingLines || []).length ? [[], ["Missing data check"], ...group.missingLines.map(l => [l])] : [];
     const ws = XLSX.utils.aoa_to_sheet([group.headers, ...group.rows, ...noteRows]);
-    if (exportKind.resolution === "Hourly" && exportKind.template === "3") {
-      // ACT format: real Excel datetimes (yyyy-mm-dd hh:mm:ss) in A and C,
-      // value shown to 4 dp — matching meter-data-template 2026.xlsx.
-      const toSerial = s => {
-        const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
-        return m ? (Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) - Date.UTC(1899, 11, 30)) / 86400000 : null;
-      };
-      group.rows.forEach((row, i) => {
-        const r = i + 1; // header is row 0
-        for (const c of [0, 2]) {
-          const serial = toSerial(row[c]);
-          if (serial != null) ws[XLSX.utils.encode_cell({ r, c })] = { t: "n", v: serial, z: "yyyy-mm-dd hh:mm:ss" };
-        }
-        const vCell = ws[XLSX.utils.encode_cell({ r, c: 3 })];
-        if (vCell && vCell.t === "n") vCell.z = "0.0000";
-      });
-      ws["!cols"] = [{ wch: 20 }, { wch: 16 }, { wch: 20 }, { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 16 }];
-      const sheetName = (String(group.facilityId || "GENID").replace(/[\\\/\?\*\[\]:]/g, "_").slice(0, 31)) || "GENID";
-      XLSX.utils.book_append_sheet(wb, ws, sheetName);
-      XLSX.writeFile(wb, `${conn.companyName}_${safeFacility}_export_ACT.xlsx`);
-    } else if (exportKind.resolution === "Hourly") {
+    if (exportKind.resolution === "Hourly") {
       const sheetName = exportKind.template === "1" ? "Data" : "MeterData";
       XLSX.utils.book_append_sheet(wb, ws, sheetName);
       XLSX.writeFile(wb, `${conn.companyName}_${safeFacility}_export_template_${exportKind.template}.xlsx`);
