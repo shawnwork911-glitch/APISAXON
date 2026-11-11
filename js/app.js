@@ -1646,14 +1646,21 @@ const App = (() => {
       if (!wc) continue;
       const g = TemplateExport.groupFor(r.stationId, settings, grouping);
       const day = `${wc.y}-${String(wc.mo).padStart(2, "0")}-${String(wc.d).padStart(2, "0")}`;
-      if (!byGroup.has(g.key)) byGroup.set(g.key, { g, days: new Map(), members: new Set() });
+      if (!byGroup.has(g.key)) byGroup.set(g.key, { g, days: new Map(), members: new Set(), zeroByStation: new Map() });
       const entry = byGroup.get(g.key);
-      entry.members.add(stationNames[r.stationId] || r.stationName || r.stationId);
+      const memberName = stationNames[r.stationId] || r.stationName || r.stationId;
+      entry.members.add(memberName);
       entry.days.set(day, (entry.days.get(day) || 0) + (Number(r.kwh) || 0));
+      // A 0 kWh daily reading means the data was lost — remember which station/day,
+      // so it still shows up when combined with other stations that did report.
+      if (!(Number(r.kwh) > 0)) {
+        if (!entry.zeroByStation.has(memberName)) entry.zeroByStation.set(memberName, new Set());
+        entry.zeroByStation.get(memberName).add(day);
+      }
     }
     const toUTC = (iso) => { const [y, m, d] = iso.split("-").map(Number); return Date.UTC(y, m - 1, d); };
     const groups = [];
-    for (const { g, days, members } of byGroup.values()) {
+    for (const { g, days, members, zeroByStation } of byGroup.values()) {
       const sheets = [];
       const monthKeys = [...new Set([...days.keys()].map(d => d.slice(0, 7)))].sort();
       // Also cover months in the range that have gaps only in the middle (first→last month)
@@ -1682,7 +1689,17 @@ const App = (() => {
             rows.push([serial, null]);
           }
         }
-        sheets.push({ name: `${MONTH_ABBR[m - 1]} ${y}`, headers, rows, company: companyName, deviceId: g.facilityId, total: Math.round(total * 1e6) / 1e6 });
+        // Per-station lost days (0 kWh) in this sheet's month, only where the
+        // combined total for that day isn't already 0 / blank (those are listed anyway).
+        const monthPrefix = `${y}-${String(m).padStart(2, "0")}`;
+        const stationLost = [];
+        if (members.size > 1) {
+          for (const [name, set] of [...zeroByStation.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+            const lostDays = [...set].filter(d => d.startsWith(monthPrefix) && d >= startDate && d <= endDate && days.get(d) > 0);
+            if (lostDays.length) stationLost.push({ name, days: lostDays });
+          }
+        }
+        sheets.push({ name: `${MONTH_ABBR[m - 1]} ${y}`, headers, rows, company: companyName, deviceId: g.facilityId, total: Math.round(total * 1e6) / 1e6, stationLost });
       }
       groups.push({ key: g.key, facilityId: g.facilityId, stationId: g.stationId, members: [...members].sort(),
         stationName: g.stationId ? (stationNames[g.stationId] || g.stationId) : "", headers, sheets, rows: Array.from({ length: dayRows }) });
@@ -1752,7 +1769,17 @@ const App = (() => {
       if (!have.has(`${y}-${pad2(m)}`)) missing.push(`${MONTH_ABBR[m - 1]} ${y}`);
       m++; if (m > 12) { m = 1; y++; }
     }
-    return missing.length ? [`Missing monthly data: ${missing.join(", ")}`] : ["No missing monthly data — every month in the range has data."];
+    // A 0 kWh monthly reading means the data was lost.
+    // Row: [GEN ID, stationName, collectTime, PVYield (kWh)]
+    const lost = group.rows.filter(r => !(Number(r[3]) > 0)).map(r => {
+      const ym = String(r[2]).slice(0, 7);
+      const label = `${MONTH_ABBR[+ym.slice(5, 7) - 1]} ${ym.slice(0, 4)}`;
+      return r[1] ? `${label} (${r[1]})` : label;
+    });
+    const lines = [];
+    if (missing.length) lines.push(`Missing monthly data: ${missing.join(", ")}`);
+    if (lost.length) lines.push(`Data lost (0 kWh): ${lost.join(", ")}`);
+    return lines.length ? lines : ["No missing monthly data — every month in the range has data."];
   }
   function attachMissingNotes(groups, resolution, startDate, endDate, template) {
     for (const g of groups) g.missingLines = missingNoteLines(resolution, g, startDate, endDate, template);
@@ -1801,19 +1828,27 @@ const App = (() => {
         ws[XLSX.utils.encode_cell({ r: totalRow, c: 1 })] = sh.rows.length
           ? { t: "n", f: `SUM(B2:B${sh.rows.length + 1})`, v: sh.total }
           : { t: "n", v: 0 };
-        const gapDays = sh.rows.filter(([, v]) => v == null)
-          .map(([serial]) => new Date(Date.UTC(1899, 11, 30) + serial * 86400000).toISOString().slice(0, 10));
-        const dailyNote = gapDays.length ? `Missing daily data: ${compressDays(gapDays)}` : "No missing daily data — every day in this month has a reading.";
+        const serialToIso = (serial) => new Date(Date.UTC(1899, 11, 30) + serial * 86400000).toISOString().slice(0, 10);
+        // Blank = no reading stored; 0 = reading came back as 0, i.e. data lost.
+        const gapDays = sh.rows.filter(([, v]) => v == null).map(([serial]) => serialToIso(serial));
+        const zeroDays = sh.rows.filter(([, v]) => v === 0).map(([serial]) => serialToIso(serial));
+        const dailyNotes = [];
+        if (gapDays.length) dailyNotes.push(`Missing daily data (no reading): ${compressDays(gapDays)}`);
+        if (zeroDays.length) dailyNotes.push(`Data lost (0 kWh): ${compressDays(zeroDays)}`);
+        (sh.stationLost || []).forEach(s => dailyNotes.push(`Data lost (0 kWh) for ${s.name}: ${compressDays(s.days)}`));
+        if (!dailyNotes.length) dailyNotes.push("No missing daily data — every day in this month has a reading.");
         ws[XLSX.utils.encode_cell({ r: totalRow + 2, c: 0 })] = { t: "s", v: "Missing data check" };
-        ws[XLSX.utils.encode_cell({ r: totalRow + 3, c: 0 })] = { t: "s", v: dailyNote };
-        ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: totalRow + 3, c: 3 } });
+        dailyNotes.forEach((line, i) => { ws[XLSX.utils.encode_cell({ r: totalRow + 3 + i, c: 0 })] = { t: "s", v: line }; });
+        ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: totalRow + 2 + dailyNotes.length, c: 3 } });
         ws["!cols"] = [{ wch: 14 }, { wch: 14 }, { wch: 28 }, { wch: 16 }];
         XLSX.utils.book_append_sheet(wb, ws, sh.name);
       }
       XLSX.writeFile(wb, `${conn.companyName}_${safeFacility}_export_daily.xlsx`);
       return;
     }
-    const noteRows = (group.missingLines || []).length ? [[], ["Missing data check"], ...group.missingLines.map(l => [l])] : [];
+    // STX format is uploaded as-is: table data only, no missing-data notes underneath.
+    const isStx = exportKind.resolution === "Hourly" && exportKind.template === "2";
+    const noteRows = !isStx && (group.missingLines || []).length ? [[], ["Missing data check"], ...group.missingLines.map(l => [l])] : [];
     const ws = XLSX.utils.aoa_to_sheet([group.headers, ...group.rows, ...noteRows]);
     if (exportKind.resolution === "Hourly") {
       const sheetName = exportKind.template === "1" ? "Data" : "MeterData";
