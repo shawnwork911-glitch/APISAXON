@@ -537,7 +537,7 @@ tbody tr:last-child td{border-bottom:none;}
     </div>
     <div class="modal-sub">STATIONS &amp; TEMPLATE EXPORT IDENTIFIERS</div>
     <div class="field-help" style="margin-bottom:8px;">
-      facility_id ties stations together for Hourly exports (Normal Hourly and STX formats) — stations sharing one are summed per hour into a single output. In STX format, meter_id is always the same as the facility_id; eac_registry_id is for STX format only.
+      facility_id ties stations together for Hourly exports (Normal Hourly and STX formats) — stations sharing one are summed per hour into a single output. In STX format, meter_id is set by you per facility (editable, not tied to the facility_id) and is what the preview and output use; eac_registry_id is always the same as the facility_id (STX format only).
     </div>
     <div id="stationsModalMissingWarning" hidden class="callout warn" style="margin-bottom:8px;"></div>
     <div class="stations-summary" style="display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--line);border-radius:10px;padding:10px 14px;background:var(--panel2);">
@@ -698,12 +698,12 @@ tbody tr:last-child td{border-bottom:none;}
 <script src="js/proxy-client.js?v=20260930k"></script>
 <script src="js/datepicker.js?v=20260930k"></script>
 <script src="js/sheets-client.js?v=20260930k"></script>
-<script src="js/templates.js?v=20261111a"></script>
+<script src="js/templates.js?v=20261117a"></script>
 <script src="js/compare.js?v=20261005c"></script>
 <script src="js/import.js?v=20261002e"></script>
 <script src="js/extraction.js?v=20260930k"></script>
 <script src="js/scheduler-client.js?v=20261103a"></script>
-<script src="js/app.js?v=20261111b"></script>
+<script src="js/app.js?v=20261117a"></script>
 <script>
 /* Export template picker: cards drive the hidden #expTemplate select (which
    app.js reads), and hovering/focusing a card previews its header row. */
