@@ -668,7 +668,7 @@ const App = (() => {
       wrap.innerHTML = `<tbody><tr><td class="field-help">No facility_id assigned yet — enter one above to see its group settings here.</td></tr></tbody>`;
       return;
     }
-    // meter_id is always the same as facility_id in STX exports — shown read-only.
+    // meter_id is user-editable (falls back to facility_id when blank); eac_registry_id always equals facility_id.
     distinct.forEach(fid => {
       stationsModalState.facilityGroups[fid] = stationsModalState.facilityGroups[fid] || {};
     });
@@ -677,11 +677,9 @@ const App = (() => {
         const g = stationsModalState.facilityGroups[fid] || {};
         return `<tr>
           <td>${escapeHtml(fid)}</td>
+          <td><input class="modalFacilityMeterInput" data-facility="${escapeHtml(fid)}"
+                     value="${escapeHtml(g.meterId || "")}" placeholder="${escapeHtml(fid)}"></td>
           <td title="Always the same as facility_id">${escapeHtml(fid)}</td>
-          <td><select class="modalFacilityRegistrySelect" data-facility="${escapeHtml(fid)}">
-                <option value="tigr" ${g.eacRegistryId !== "irec" ? "selected" : ""}>TIGR</option>
-                <option value="irec" ${g.eacRegistryId === "irec" ? "selected" : ""}>I-REC</option>
-              </select></td>
         </tr>`;
       }).join("") + `</tbody>`;
   }

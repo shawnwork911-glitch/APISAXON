@@ -72,8 +72,8 @@ const TemplateExport = (() => {
   const TEMPLATE_INFO = {
     "1": { label: "Normal Hourly format", desc: "kWh and MWh, month/day/year columns, one facility_id",
            sample: [1, 1, 2026, "2026-01-01 08:00:00", "SGT", "2026-01-01 16:00:00", 135.4, 0.1354, "GEN4xx6"] },
-    "2": { label: "STX format", desc: "ISO timestamps with offset, meter_id = facility_id, registry per facility",
-           sample: ["2026-01-01T08:00:00+08:00", "Asia/Singapore", "2026-01-01T00:00:00Z", 0.1354, "MWh", "GEN4xx6", "GEN4xx6", "tigr"] },
+    "2": { label: "STX format", desc: "ISO timestamps with offset, meter_id set per facility, eac_registry_id = facility_id",
+           sample: ["2026-01-01T08:00:00+08:00", "Asia/Singapore", "2026-01-01T00:00:00Z", 0.1354, "MWh", "MTR-001", "GEN4xx6", "GEN4xx6"] },
   };
   function templateInfo(template) { return TEMPLATE_INFO[template] || null; }
 
@@ -137,7 +137,7 @@ const TemplateExport = (() => {
    * one per group, each internally summed to one row per hour and sorted
    * earliest → latest. The facility_id column always carries the AGG ID,
    * even when a facility is split per station. In STX format meter_id is
-   * always the same as facility_id.
+   * the user-set value per facility (blank → facility_id).
    */
   function build(rows, brandKey, settings, grouping, stationNames = {}) {
     const headers = headersFor(settings.template);
@@ -161,8 +161,8 @@ const TemplateExport = (() => {
     for (const { g, hours: hourMap, members } of buckets.values()) {
       const facilityId = g.facilityId;
       const groupSettings = (settings.facilityGroups || {})[facilityId] || {};
-      // STX format: meter_id is always the same as facility_id (the AGG ID).
-      const meterId = facilityId;
+      // STX format: meter_id is the user-set value per facility (blank → facility_id).
+      const meterId = (groupSettings.meterId || "").trim() || facilityId;
       const entries = [...hourMap.entries()].sort((a, b) => a[0] - b[0]);
       const outRows = entries.map(([localTrick, kwhSum]) => {
         const wc = trickEpochToWc(localTrick);
@@ -182,7 +182,7 @@ const TemplateExport = (() => {
         // STX's local_timezone is the IANA name.
         const tz = settings.tzLabel && settings.tzLabel !== "SGT" ? settings.tzLabel : "Asia/Singapore";
         return [fmtISOWithOffset(wc, settings.utcOffset), tz, fmtISOZ(utcWc), value,
-                unit, meterId, facilityId, groupSettings.eacRegistryId || "tigr"];
+                unit, meterId, facilityId, facilityId];
       });
       groups.push({ key: g.key, facilityId, stationId: g.stationId, members: [...members].sort(),
         stationName: g.stationId ? (stationNames[g.stationId] || g.stationId) : "", headers, rows: outRows });
