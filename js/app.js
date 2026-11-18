@@ -1885,10 +1885,17 @@ const App = (() => {
     const id = qs("extCompany").value;
     const conn = connections.find(c => c.id === id);
     if (!conn) return;
-    const resolution = qs("extResolution").value;
-    const cursorDate = conn.cursor?.[resolution];
+    const picked = qs("extResolution").value;
+    // "All" suggests the earliest resume point across Hourly / Daily / Monthly,
+    // so none of the three is left with a gap (already-extracted dates are
+    // still skipped by the extraction lock per resolution).
+    const resList = picked === EXT_RES_ALL ? EXT_ALL_RESOLUTIONS : [picked];
     // The cursor is the last day/month already fetched, so suggest the one after it.
-    const suggested = ExtractionEngine.nextStartAfter(resolution, cursorDate);
+    const suggestions = resList
+      .map(r => ExtractionEngine.nextStartAfter(r, conn.cursor?.[r]))
+      .filter(Boolean)
+      .sort();
+    const suggested = suggestions[0];
     if (suggested && !DatePicker.getISO(qs("extStart"))) {
       DatePicker.setFromISO(qs("extStart"), suggested);
     }
@@ -1920,27 +1927,43 @@ const App = (() => {
     queueRunning = false;
   }
 
+  // The Resolution dropdown's "All" choice queues Monthly, Daily and Hourly (in that order)
+  // for the same company / stations / date range, one after another. Each
+  // resolution is planned and queued independently (own extraction lock,
+  // own job row, own auto-continue job), so "All" is just three normal runs.
+  const EXT_RES_ALL = "All";
+  const EXT_ALL_RESOLUTIONS = ["Monthly", "Daily", "Hourly"]; // queue order = priority
+
   async function handleQueueExtraction() {
     const id = qs("extCompany").value;
     const conn = connections.find(c => c.id === id);
     if (!conn) { alert("Pick a company first."); return; }
     const stationIds = [...qs("extStations").querySelectorAll("input:checked")].map(i => i.value);
-    const resolution = qs("extResolution").value;
+    const picked = qs("extResolution").value;
+    const resolutions = picked === EXT_RES_ALL ? EXT_ALL_RESOLUTIONS : [picked];
     const startDate = DatePicker.getISO(qs("extStart"));
     const endDate = DatePicker.getISO(qs("extEnd"));
     if (!startDate || !endDate) { alert("Pick a start and end date."); return; }
     if (endDate < startDate) { alert("End date is before start date — please fix the range."); return; }
     if (!stationIds.length) { alert("Tick at least one station."); return; }
     const today = localISODate(new Date()); // local date — toISOString() gave yesterday's date before 8am in UTC+8
-    if (qs("extAutoContinue").checked) { await queueAutoContinueJob(conn, resolution, stationIds, startDate, endDate); return; }
+    if (qs("extAutoContinue").checked) {
+      for (const r of resolutions) await queueAutoContinueJob(conn, r, stationIds, startDate, endDate);
+      return;
+    }
     if (endDate > today) {
       if (confirm("The end date is in the future, so this range can't be finished today.\n\nSwitch on \"Auto-continue on the server\"? The server will extract what's available now, then keep going every day until the end date is saved.")) {
         qs("extAutoContinue").checked = true;
-        await queueAutoContinueJob(conn, resolution, stationIds, startDate, endDate);
+        for (const r of resolutions) await queueAutoContinueJob(conn, r, stationIds, startDate, endDate);
       }
       return;
     }
+    // Resolutions are handled one at a time so any "already extracted" prompt
+    // is answered before the next resolution is checked.
+    for (const r of resolutions) await queueOneResolution(conn, r, stationIds, startDate, endDate);
+  }
 
+  async function queueOneResolution(conn, resolution, stationIds, startDate, endDate) {
     // ---- extraction lock: don't re-fetch what's already in the Readings tab ----
     const btn = qs("btnQueueExtraction");
     if (btn) btn.disabled = true;
