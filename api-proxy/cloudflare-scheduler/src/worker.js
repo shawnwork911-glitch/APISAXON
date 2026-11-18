@@ -21,7 +21,7 @@
    ===================================================================== */
 
 import { makeRunContext, sheets } from "./google.js";
-import { runScheduler, readJobs, appendJob, writeJob, readConnections, SUPPORTED_BRANDS } from "./scheduler.js";
+import { runScheduler, readJobs, appendJob, writeJob, readConnections, SUPPORTED_BRANDS, RESOLUTION_PRIORITY } from "./scheduler.js";
 import { monthStart } from "./plan.js";
 
 const CORS_HEADERS = {
@@ -102,7 +102,17 @@ async function createJob(rc, ctx, who, input) {
     startDate: start, endDate, skip, cursor: "", status: "active", quotaDate: "", callsToday: 0,
     note: "Queued — first batch starting now.", lastRunAt: "", rowsSaved: 0, createdBy: who.email, createdAt: nowIso, updatedAt: nowIso, lastError: "",
   });
-  ctx.waitUntil(runScheduler(rc, { onlyJobId: job.jobId }).catch(err => console.error("first run failed:", err.message)));
+  // Monthly → Daily → Hourly priority on a shared quota. If a higher-priority job is already
+  // running for this company, don't start this one in parallel (two simultaneous runs would
+  // both see an untouched quota and overspend it) — the hourly run picks it up, in priority order.
+  const blocker = jobs.find(j => j.connectionId === connectionId && j.status === "active"
+    && (RESOLUTION_PRIORITY[j.resolution] ?? 9) < (RESOLUTION_PRIORITY[resolution] ?? 9));
+  if (blocker) {
+    job.note = `Queued — starts after the ${blocker.resolution} job (priority: Monthly → Daily → Hourly).`;
+    await writeJob(rc, job);
+  } else {
+    ctx.waitUntil(runScheduler(rc, { onlyJobId: job.jobId }).catch(err => console.error("first run failed:", err.message)));
+  }
   return json(200, { job: publicJob(job) });
 }
 

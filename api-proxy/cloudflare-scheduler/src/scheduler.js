@@ -28,6 +28,9 @@ export const QUOTAS = {
   fusionsolar: { perDay: 25, delayMs: 2000 },
   solaredge:   { perDay: 300, delayMs: 400 },
 };
+// When several jobs share a company's daily API quota, Monthly gets it first,
+// then Daily, then Hourly (ties: oldest job first).
+export const RESOLUTION_PRIORITY = { Monthly: 0, Daily: 1, Hourly: 2 };
 export const BRAND_LABEL = { fusionsolar: "FusionSolar", solaredge: "SolarEdge" };
 export const SUPPORTED_BRANDS = Object.keys(QUOTAS);
 
@@ -308,7 +311,9 @@ export async function runScheduler(rc, opts = {}) {
   const settleHour = Number(rc.env.SETTLE_HOUR ?? 2);
   const summary = { processed: [], skipped: [] };
   const jobs = await readJobs(rc);
-  const candidates = jobs.filter(j => j.status === "active" && (!opts.onlyJobId || j.jobId === opts.onlyJobId));
+  const candidates = jobs.filter(j => j.status === "active" && (!opts.onlyJobId || j.jobId === opts.onlyJobId))
+    .sort((a, b) => (RESOLUTION_PRIORITY[a.resolution] ?? 9) - (RESOLUTION_PRIORITY[b.resolution] ?? 9)
+      || String(a.createdAt).localeCompare(String(b.createdAt)));
   if (!candidates.length) return summary;
   const conns = await readConnections(rc);
   const dirty = new Set();
